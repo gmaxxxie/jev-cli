@@ -26,17 +26,15 @@ Three things: the CLI script, the pi extensions (`jev` + `jev_triage`), and an A
 
 ### One-shot install
 
-> The repo is private, so raw URLs require auth — use `git clone` (passwordless if you have GitHub SSH credentials):
+```bash
+curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/install.sh | bash
+```
+
+Or clone and run locally:
 
 ```bash
 git clone git@github.com:gmaxxxie/jev-cli.git /tmp/jev-cli
 bash /tmp/jev-cli/install.sh
-```
-
-If the repo is ever made public, this also works:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/install.sh | bash
 ```
 
 ### Install as a pi package (git source)
