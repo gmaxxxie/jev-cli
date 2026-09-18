@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""
+jev — TypeSafe Jev System One 决策模型 CLI（走 OpenRouter Decisions API）
+
+三种问题类型（wire 格式）：
+  noul    二值判断，返回 P(true) ∈ [0,1]；可选 criteria: {"true": ..., "false": ...}（两键都带）
+  choice  从选项里选一个；criteria 为 {key: 描述} 有序对象
+  score   有序评分（2-10 级）；criteria 为从低到高的字符串列表，可带 {"label","description"}
+
+用法示例：
+  # 最简单：二值判断（默认 noul）
+  jev "数据库主节点 CPU 95%" -q urgent:需要立即处理吗?
+
+  # noul + 两侧描述（JSON 完整控制）
+  jev "payout 连续失败 3 次" -q '{"urgent":{"type":"noul",\
+    "instructions":"This is urgent",\
+    "criteria":{"true":"需立即介入","false":"可稍后处理"}}}'
+
+  # choice：从选项里选（criteria 对象，顺序即模型所见顺序）
+  jev "请求进入路由层" -q '{"region":{"type":"choice",\
+    "instructions":"select region",\
+    "criteria":{"us-east":"美东","eu-west":"欧洲","ap-east":"亚太"}}}'
+
+  # score：有序评分（2-10 级，从低到高）
+  jev "客户工单语气激烈" -q '{"anger":{"type":"score",\
+    "instructions":"anger level",\
+    "criteria":["平静","有些不满","明显生气","威胁要取消"]}}'
+
+  # 从文件读 state
+  jev @state.txt -q ok:一切正常吗?
+
+API Key 来源（按优先级）：
+  1. --key
+  2. 环境变量 OPENROUTER_API_KEY
+  3. ~/.pi/agent/auth.json 里的 openrouter.key
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
+DEFAULT_MODEL = "typesafe/jev-1.13"
+AUTH_JSON = os.path.expanduser("~/.pi/agent/auth.json")
+
+VALID_TYPES = ("noul", "choice", "score")
+
+
+def resolve_api_key(explicit=None):
+    if explicit:
+        return explicit
+    env = os.environ.get("OPENROUTER_API_KEY")
+    if env:
+        return env
+    try:
+        with open(AUTH_JSON, encoding="utf-8") as f:
+            auth = json.load(f)
+        or_cfg = auth.get("openrouter") or {}
+        key = or_cfg.get("key")
+        if key:
+            return key
+    except FileNotFoundError:
+        pass
+    raise SystemExit(
+        "未找到 OpenRouter API key：请用 --key 传入，或设置 OPENROUTER_API_KEY，"
+        f"或在 {AUTH_JSON} 里配置 openrouter.key"
+    )
+
+
+def parse_questions(specs):
+    """解析 -q 参数。
+
+    两种形式：
+      1. JSON：  -q '{"urgent": {"type": "noul", "instructions": "...", \
+                  "criteria": {"true": "...", "false": "..."}}}'
+         （完整控制 wire 格式，推荐 choice/score）
+      2. 缩写：  -q name:instructions   （= noul，最常见的二值判断）
+    """
+    questions = {}
+    for spec in specs:
+        s = spec.strip()
+        if s.startswith("{"):
+            try:
+                obj = json.loads(s)
+            except json.JSONDecodeError as e:
+                raise SystemExit(f"JSON 解析失败: {e}") from e
+            if not isinstance(obj, dict):
+                raise SystemExit(f"JSON 必须是对象: {spec}")
+            for name, q in obj.items():
+                if not isinstance(q, dict) or "type" not in q:
+                    raise SystemExit(f"问题 {name} 缺少 type 字段: {spec}")
+                # OpenRouter 的 schema 里 instructions 必填，缺省给空串
+                q.setdefault("instructions", "")
+                questions[name] = q
+            continue
+        # 缩写: name:instructions → noul
+        head, sep, rest = s.partition(":")
+        if not sep or not head.strip() or not rest.strip():
+            raise SystemExit(f"问题格式错误（应为 name:instructions 或 JSON）: {spec}")
+        questions[head.strip()] = {"type": "noul", "instructions": rest.strip()}
+    return questions
+
+
+def call_decisions(state, questions, model, endpoint, api_key, timeout):
+    payload = {"model": model, "state": state, "questions": questions}
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:2000]
+        raise SystemExit(f"HTTP {e.code}: {body}") from e
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("state", nargs="?", help="程序状态描述；以 @ 开头则从文件读取")
+    ap.add_argument("-q", "--question", action="append", default=[],
+                    help="name:type:instructions[...]，可多次（type: noul/choice/score）")
+    ap.add_argument("-m", "--model", default=DEFAULT_MODEL, help=f"模型 ID（默认 {DEFAULT_MODEL}）")
+    ap.add_argument("-e", "--endpoint", default=DEFAULT_ENDPOINT)
+    ap.add_argument("--key", help="OpenRouter API key")
+    ap.add_argument("-t", "--timeout", type=int, default=60)
+    ap.add_argument("-j", "--json", action="store_true", help="输出原始 JSON（含 usage）")
+    args = ap.parse_args()
+
+    if args.state is None:
+        print("（从 stdin 读取 state，Ctrl-D 结束）", file=sys.stderr)
+        state = sys.stdin.read().strip()
+    elif args.state.startswith("@"):
+        with open(args.state[1:], encoding="utf-8") as f:
+            state = f.read().strip()
+    else:
+        state = args.state.strip()
+    if not state:
+        raise SystemExit("state 不能为空")
+
+    questions = parse_questions(args.question)
+    if not questions:
+        questions = {
+            "is_urgent": {
+                "type": "noul",
+                "instructions": "Does this situation require immediate human attention?",
+                "criteria": {"true": "Yes, act now", "false": "No, can wait"},
+            }
+        }
+
+    api_key = resolve_api_key(args.key)
+    result = call_decisions(state=state, questions=questions, model=args.model,
+                            endpoint=args.endpoint, api_key=api_key, timeout=args.timeout)
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    print("模型: %s  provider: %s" % (result.get("model"), result.get("provider")))
+    for name, ans in result.get("answers", {}).items():
+        qtype = ans.get("type")
+        print("- %s (%s):" % (name, qtype), end=" ")
+        if qtype == "noul":
+            v = ans.get("noul")
+            print("%.2f  (阈值 0.5 → %s)" % (v, "真" if v >= 0.5 else "假"))
+        elif qtype == "choice":
+            print(ans.get("choice"))
+        elif qtype == "score":
+            print(ans.get("score"))
+        else:
+            print(json.dumps(ans, ensure_ascii=False))
+    u = result.get("usage") or {}
+    if u:
+        print("usage: input=%s output=%s cost=$%.6f"
+              % (u.get("input_tokens"), u.get("output_tokens"), u.get("cost", 0)))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

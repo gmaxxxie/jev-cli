@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# 环境与密钥
+.env
+.env.*
+
+# 系统
+.DS_Store
+
+# 测试/构建产物
+dist/
+build/
