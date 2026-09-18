@@ -10,6 +10,7 @@ set -euo pipefail
 
 INSTALL_CLI="${INSTALL_CLI:-1}"
 INSTALL_EXT="${INSTALL_EXT:-1}"
+INSTALL_TRIAGE="${INSTALL_TRIAGE:-1}"
 REPO_BASE="https://raw.githubusercontent.com/gmaxxxie/jev-cli/main"
 
 # 本地优先，找不到就走网络（curl 安装时没有本地仓库目录）
@@ -41,6 +42,12 @@ if [[ "$INSTALL_EXT" == "1" ]]; then
   mkdir -p "$HOME/.pi/agent/extensions"
   fetch "extension/jev.ts" "$HOME/.pi/agent/extensions/jev.ts"
   echo "    pi 扩展已安装到 $HOME/.pi/agent/extensions/jev.ts（pi 里 /reload 生效）"
+fi
+
+if [[ "$INSTALL_TRIAGE" == "1" ]]; then
+  mkdir -p "$HOME/.pi/agent/extensions"
+  fetch "extension/jev-triage.ts" "$HOME/.pi/agent/extensions/jev-triage.ts"
+  echo "    pi 扩展 jev_triage 已安装到 $HOME/.pi/agent/extensions/jev-triage.ts（pi 里 /reload 生效）"
 fi
 
 # API key 引导

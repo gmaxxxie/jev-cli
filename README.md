@@ -1,6 +1,6 @@
 # jev-cli
 
-TypeSafe Jev System One 决策模型命令行工具（走 [OpenRouter Decisions API](https://openrouter.ai/docs/features/decisions)），附 pi 扩展。
+TypeSafe Jev System One 决策模型命令行工具（走 [OpenRouter Decisions API](https://openrouter.ai/docs/features/decisions)），附两个 pi 扩展：`jev`（结构化决策）+ `jev_triage`（多候选决策支持）。
 
 ## 是什么
 
@@ -9,8 +9,8 @@ TypeSafe Jev System One 决策模型命令行工具（走 [OpenRouter Decisions 
 | 类型 | 含义 | 返回 |
 |------|------|------|
 | `noul` | 二值判断 | P(true) ∈ [0,1] |
-| `choice` | 从选项里选一个 | 选中项 key |
-| `score` | 有序评分（2-10 级） | 等级序号 |
+| `choice` | 从选项里选一个 | 选中项 key + 各选项概率 |
+| `score` | 有序评分（criteria 数档位） | 0..(N-1) 浮点 + confidence |
 
 典型用途：路由、分类、紧急度判定、工作流里的门禁决策。
 
@@ -22,7 +22,7 @@ TypeSafe Jev System One 决策模型命令行工具（走 [OpenRouter Decisions 
 
 ## 安装
 
-三样东西：CLI 脚本、pi 扩展、API key。
+三样东西：CLI 脚本、pi 扩展（`jev` + `jev_triage`）、API key。
 
 ### 一键安装
 
@@ -46,10 +46,12 @@ curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/install.sh | 
 mkdir -p ~/.local/bin
 cp bin/jev ~/.local/bin/jev && chmod +x ~/.local/bin/jev
 
-# 2. pi 扩展（可选）
+# 2. pi 扩展（可选，默认都装）
 mkdir -p ~/.pi/agent/extensions
 cp extension/jev.ts ~/.pi/agent/extensions/
+cp extension/jev-triage.ts ~/.pi/agent/extensions/
 # pi 里 /reload 生效
+# 若只要某一个：INSTALL_EXT=1 INSTALL_TRIAGE=0 bash install.sh
 
 # 3. API key（三选一，按优先级）
 #    a. 环境变量
@@ -70,7 +72,7 @@ jev "请求进入路由层" -q '{"region":{"type":"choice",\
   "instructions":"select region",\
   "criteria":{"us-east":"美东","eu-west":"欧洲","ap-east":"亚太"}}}'
 
-# score：有序评分（2-10 级，从低到高）
+# score：有序评分（criteria 档位，返回 0..N-1 浮点，越高越强）
 jev "客户工单语气激烈" -q '{"anger":{"type":"score",\
   "instructions":"anger level",\
   "criteria":["平静","有些不满","明显生气","威胁要取消"]}}'
@@ -96,13 +98,46 @@ jev "payout 连续失败 3 次" -q '{"urgent":{"type":"noul",\
 | `-t` | 超时秒数 | 60 |
 | `-j` | 输出原始 JSON | — |
 
+## pi 扩展
+
+### `jev` — 结构化决策工具
+
+给 pi 注册一个 `jev` 工具：输入 `state` + `questions`，返回结构化判定。用于路由、分类、门禁预筛等。
+
+```jsonc
+// pi 里对 LLM 暴露的 tool
+jev(state: "数据库主节点 CPU 95%",
+    questions: { urgent: { type: "noul", instructions: "需要立即处理吗?" } })
+```
+
+### `jev_triage` — 多候选决策支持
+
+当 pi 回复「📋 待办（文档已记录）…需要我继续做哪一项吗？」这类多选决策时刻，pi 调用 `jev_triage`：
+
+```jsonc
+// pi 里对 LLM 暴露的 tool
+jev_triage(context: "Jev 集成 v1.3 已落地，剩余三项收尾待办",
+           candidates: ["回放 E1 一致性", "E1 对接 audit_chain", "接线 autowrite CLI"])
+```
+
+输出一份决策支持报告：
+
+1. **候选对比（规则化信号）** — 从候选文本提取依赖/成本/现状
+2. **Jev 评分排序** — 每候选一个 `score`（0-10 映射 + 把握度）
+3. **推荐优先做** — Jev `choice` 选最优
+4. **Top-3 优劣势** — 每候选 `noul` 判优势/风险（P 值）
+
+Jev 失败/超时时自动回退规则化对比，不阻断。建议在 `AGENTS.md` 加约定让 pi 在决策时刻主动调用。
+
 ## 目录结构
 
 ```
 jev-cli/
-├── bin/          jev CLI 脚本（单文件 Python）
-├── extension/    pi 扩展（注册 jev 工具）
-├── install.sh    一键安装脚本
+├── bin/                jev CLI 脚本（单文件 Python）
+├── extension/          pi 扩展
+│   ├── jev.ts          结构化决策工具
+│   └── jev-triage.ts   多候选决策支持工具
+├── install.sh          一键安装脚本（INSTALL_CLI / INSTALL_EXT / INSTALL_TRIAGE 开关）
 └── README.md
 ```
 
