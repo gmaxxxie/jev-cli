@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 *.egg-info/
 
+# Node
+node_modules/
+package-lock.json
+
 # 环境与密钥
 .env
 .env.*
