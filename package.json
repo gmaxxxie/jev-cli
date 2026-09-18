@@ -1,0 +1,14 @@
+{
+  "name": "jev-cli",
+  "version": "1.0.0",
+  "description": "TypeSafe Jev System One decision-model CLI + pi extensions (jev / jev_triage)",
+  "license": "MIT",
+  "keywords": ["pi-package", "jev", "decision", "openrouter"],
+  "pi": {
+    "extensions": ["./extension"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
