@@ -60,12 +60,9 @@ To pin a specific release instead, append a tag: `pi install git:github.com/gmax
 mkdir -p ~/.local/bin
 cp bin/jev ~/.local/bin/jev && chmod +x ~/.local/bin/jev
 
-# 2. pi extensions (optional, both by default)
-mkdir -p ~/.pi/agent/extensions
-cp extension/jev.ts ~/.pi/agent/extensions/
-cp extension/jev-triage.ts ~/.pi/agent/extensions/
-# /reload in pi to activate
-# Only one? INSTALL_EXT=1 INSTALL_TRIAGE=0 bash install.sh
+# 2. pi extensions — use the pi package instead of copying to ~/.pi/agent/extensions
+#    (copying would conflict with the package's same-named tools)
+pi install git:github.com/gmaxxxie/jev-cli
 
 # 3. API key (pick one, in priority order)
 #    a. Environment variable
@@ -162,7 +159,7 @@ jev-cli/
 ├── extension/          pi extensions
 │   ├── jev.ts          structured decision tool
 │   └── jev-triage.ts   multi-candidate decision support tool
-├── install.sh          one-shot installer (INSTALL_CLI / INSTALL_EXT / INSTALL_TRIAGE switches)
+├── install.sh          one-shot installer (INSTALL_CLI switch; CLI + API key guide)
 ├── package.json        pi package manifest (git source)
 ├── README.md           (English)
 └── README.zh.md        (中文版)

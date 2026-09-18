@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# jev-cli 一键安装：CLI + pi 扩展 + 引导配置 API key
+# jev-cli 一键安装：CLI + 引导配置 API key
+#
+# 说明：pi 扩展（jev / jev_triage）已改为通过 pi 包分发，不再由本脚本
+# 安装到全局 extensions 目录（避免与 pi 包重复注册导致工具名冲突）：
+#   pi install git:github.com/gmaxxxie/jev-cli
 #
 # 两种运行方式：
 #   1. 网络安装（推荐）：
@@ -9,8 +13,6 @@
 set -euo pipefail
 
 INSTALL_CLI="${INSTALL_CLI:-1}"
-INSTALL_EXT="${INSTALL_EXT:-1}"
-INSTALL_TRIAGE="${INSTALL_TRIAGE:-1}"
 REPO_BASE="https://raw.githubusercontent.com/gmaxxxie/jev-cli/main"
 
 # 本地优先，找不到就走网络（curl 安装时没有本地仓库目录）
@@ -38,16 +40,11 @@ if [[ "$INSTALL_CLI" == "1" ]]; then
   fi
 fi
 
-if [[ "$INSTALL_EXT" == "1" ]]; then
-  mkdir -p "$HOME/.pi/agent/extensions"
-  fetch "extension/jev.ts" "$HOME/.pi/agent/extensions/jev.ts"
-  echo "    pi 扩展已安装到 $HOME/.pi/agent/extensions/jev.ts（pi 里 /reload 生效）"
-fi
-
-if [[ "$INSTALL_TRIAGE" == "1" ]]; then
-  mkdir -p "$HOME/.pi/agent/extensions"
-  fetch "extension/jev-triage.ts" "$HOME/.pi/agent/extensions/jev-triage.ts"
-  echo "    pi 扩展 jev_triage 已安装到 $HOME/.pi/agent/extensions/jev-triage.ts（pi 里 /reload 生效）"
+# 若存在旧版全局扩展（历史 install.sh 安装的），提示改用 pi 包，避免冲突
+if [[ -f "$HOME/.pi/agent/extensions/jev.ts" || -f "$HOME/.pi/agent/extensions/jev-triage.ts" ]]; then
+  echo "    ⚠ 检测到旧版全局扩展，请移除并用 pi 包方式安装："
+  echo "      rm $HOME/.pi/agent/extensions/jev.ts $HOME/.pi/agent/extensions/jev-triage.ts"
+  echo "      pi install git:github.com/gmaxxxie/jev-cli"
 fi
 
 # API key 引导
