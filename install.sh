@@ -1,18 +1,34 @@
 #!/usr/bin/env bash
 # jev-cli 一键安装：CLI + pi 扩展 + 引导配置 API key
+#
+# 两种运行方式：
+#   1. 网络安装（推荐）：
+#      curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/install.sh | bash
+#   2. 本地仓库运行：
+#      bash install.sh   （在 jev-cli 仓库目录里）
 set -euo pipefail
 
 INSTALL_CLI="${INSTALL_CLI:-1}"
 INSTALL_EXT="${INSTALL_EXT:-1}"
+REPO_BASE="https://raw.githubusercontent.com/gmaxxxie/jev-cli/main"
 
-# 仓库根目录（脚本所在位置的上一级）
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 本地优先，找不到就走网络（curl 安装时没有本地仓库目录）
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/bin/jev" ]]; then
+  SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  fetch() { cp "$SRC/$1" "$2"; }
+else
+  fetch() {
+    local tmp; tmp="$(mktemp)"
+    curl -fsSL "$REPO_BASE/$1" -o "$tmp"
+    mv "$tmp" "$2"
+  }
+fi
 
 echo "==> jev-cli installer"
 
 if [[ "$INSTALL_CLI" == "1" ]]; then
   mkdir -p "$HOME/.local/bin"
-  cp "$REPO_DIR/bin/jev" "$HOME/.local/bin/jev"
+  fetch "bin/jev" "$HOME/.local/bin/jev"
   chmod +x "$HOME/.local/bin/jev"
   if command -v python3 >/dev/null 2>&1; then
     echo "    CLI 已安装到 $HOME/.local/bin/jev (python3: $(python3 --version))"
@@ -23,7 +39,7 @@ fi
 
 if [[ "$INSTALL_EXT" == "1" ]]; then
   mkdir -p "$HOME/.pi/agent/extensions"
-  cp "$REPO_DIR/extension/jev.ts" "$HOME/.pi/agent/extensions/jev.ts"
+  fetch "extension/jev.ts" "$HOME/.pi/agent/extensions/jev.ts"
   echo "    pi 扩展已安装到 $HOME/.pi/agent/extensions/jev.ts（pi 里 /reload 生效）"
 fi
 
