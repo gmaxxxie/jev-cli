@@ -110,6 +110,17 @@ jev(state: "数据库主节点 CPU 95%",
     questions: { urgent: { type: "noul", instructions: "需要立即处理吗?" } })
 ```
 
+### `/jev` — 交互式配置命令
+
+注册一个 `/jev` 斜杠命令，在 pi 里交互式配置 CLI 默认值：
+
+- `/jev` — 显示当前配置与用法
+- `/jev config` — 交互式向导（模型 / 端点 / 超时 / 默认问题 / API key）
+- `/jev show` — 以 JSON 显示当前配置
+- `/jev reset` — 恢复默认（删除配置文件）
+
+配置存于 `~/.pi/agent/jev-config.json`（model / endpoint / timeoutMs / defaultQuestion）；API key 写入 `~/.pi/agent/auth.json` 的 `openrouter.key`（与 install.sh 一致）。`jev` 工具执行时会读该配置，把 `-m` / `-e` / `-t` 传给 CLI，所以这里设的默认值对 LLM 触发的调用同样生效。
+
 ### `jev_triage` — 多候选决策支持
 
 当 pi 回复「📋 待办（文档已记录）…需要我继续做哪一项吗？」这类多选决策时刻，pi 调用 `jev_triage`：

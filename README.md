@@ -118,6 +118,17 @@ jev(state: "database primary CPU 95%",
     questions: { urgent: { type: "noul", instructions: "需要立即处理吗?" } })
 ```
 
+### `/jev` — interactive config command
+
+Registers a `/jev` slash command for configuring the CLI defaults inside pi:
+
+- `/jev` — show current config and usage
+- `/jev config` — interactive wizard (model, endpoint, timeout, default question, API key)
+- `/jev show` — show the current config as JSON
+- `/jev reset` — restore defaults (delete config file)
+
+Config is stored in `~/.pi/agent/jev-config.json` (model / endpoint / timeoutMs / defaultQuestion); the API key goes into `~/.pi/agent/auth.json` (`openrouter.key`, same as `install.sh`). The `jev` tool reads this config and passes `-m` / `-e` / `-t` to the CLI, so defaults you set here apply to LLM-driven calls too.
+
 ### `jev_triage` — multi-candidate decision support
 
 When pi replies with a multi-choice decision moment like "📋 待办（文档已记录）…需要我继续做哪一项吗?", pi calls `jev_triage`:
