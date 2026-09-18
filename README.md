@@ -1,5 +1,7 @@
 # jev-cli
 
+> 中文版：[README.zh.md](README.zh.md)
+
 A CLI for the [TypeSafe Jev System One](https://openrouter.ai/docs/features/decisions) decision model (via the [OpenRouter Decisions API](https://openrouter.ai/docs/features/decisions)), plus two pi extensions: `jev` (structured decisions) and `jev_triage` (multi-candidate decision support).
 
 ## What it is
@@ -145,7 +147,8 @@ jev-cli/
 │   └── jev-triage.ts   multi-candidate decision support tool
 ├── install.sh          one-shot installer (INSTALL_CLI / INSTALL_EXT / INSTALL_TRIAGE switches)
 ├── package.json        pi package manifest (git source)
-└── README.md
+├── README.md           (English)
+└── README.zh.md        (中文版)
 ```
 
 ## License
