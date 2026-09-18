@@ -42,10 +42,16 @@ bash /tmp/jev-cli/install.sh
 ### Install as a pi package (git source)
 
 ```bash
-pi install git:github.com/gmaxxxie/jev-cli@v1.0.0
+pi install git:github.com/gmaxxxie/jev-cli
 ```
 
-The package registers both extensions (`jev`, `jev_triage`).
+The package registers both extensions (`jev`, `jev_triage`). No version ref = follow `main`; update anytime with:
+
+```bash
+pi update --extensions
+```
+
+To pin a specific release instead, append a tag: `pi install git:github.com/gmaxxxie/jev-cli@v1.0.0`.
 
 ### Manual install
 
