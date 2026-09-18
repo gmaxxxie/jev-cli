@@ -43,8 +43,6 @@ curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/install.sh | 
 
 ```bash
 pi install git:github.com/gmaxxxie/jev-cli@v1.0.0
-# or from Gitea (LAN)
-pi install git:git@192.168.1.69:2222/admin/jev-cli.git@v1.0.0
 ```
 
 The package registers both extensions (`jev`, `jev_triage`).
