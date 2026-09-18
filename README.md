@@ -26,6 +26,15 @@ TypeSafe Jev System One 决策模型命令行工具（走 [OpenRouter Decisions 
 
 ### 一键安装
 
+> 仓库当前为私有，raw 直链需要认证，请用 `git clone`（已配置 GitHub SSH 凭据时免密）：
+
+```bash
+git clone git@github.com:gmaxxxie/jev-cli.git /tmp/jev-cli
+bash /tmp/jev-cli/install.sh
+```
+
+若仓库日后改为公开，也可以：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/install.sh | bash
 ```
