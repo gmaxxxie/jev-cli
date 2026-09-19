@@ -190,13 +190,26 @@ So each entry is probed at call time and the missing ones are marked:
 ```
 ### 本机未安装（已从候选中剔除）
 - `fetch_content` — 装法: pi install npm:pi-web-access
-- `jev-ultrafast` — 装法: git clone https://github.com/browser-use/jev-ultrafast ~/Project/jev-ultrafast && uv sync
+- `jev-ultrafast` — 装法: git clone https://github.com/browser-use/jev-ultrafast ~/dev/jev-ultrafast && uv sync
 ```
 
 Missing tools are dropped from the Jev candidate list, and when the recommended pick is itself
 unavailable the output carries an explicit install hint rather than a recommendation that would
 fail on use. `details.available` / `details.missing_tools` expose the same data to callers.
-Probe override: `JEV_ULTRAFAST_DIR` (default `~/Project/jev-ultrafast`).
+
+`jev-ultrafast` has no fixed install path (bootstrap uses `~/Project`, people clone to `~/dev`, …),
+so it is resolved by three clues in reliability order — the first one that yields a real repo wins:
+
+1. **`jev-uf` on PATH** — read the repo path out of the wrapper script itself (follow symlinks, then
+   match `REPO=`). The wrapper is the single source of truth for where the tool lives, so a probe
+   that follows it cannot go stale when the directory is renamed or moved.
+2. **`JEV_ULTRAFAST_DIR`** — same override the bootstrap script honours.
+3. **Default locations** — `~/Project/jev-ultrafast`, then `~/dev/jev-ultrafast`.
+
+Each candidate must contain `pyproject.toml` (same marker the bootstrap uses). The report prints
+which clue fired (`_探针: jev-ultrafast 识别于 jev-uf → /path_`) and `details.ultrafast_dir` /
+`details.ultrafast_detected_via` carry it for callers — a wrong guess is then visible instead of
+silently dropping a tool that is actually installed.
 
 ### `jev_triage` — multi-candidate decision support
 

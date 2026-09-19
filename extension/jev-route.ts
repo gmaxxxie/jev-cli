@@ -26,7 +26,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -98,17 +98,74 @@ function piPackages(): string {
 	}
 }
 
-/** 可执行文件是否在 PATH 里（用 shell 的 `command -v` 语义，兼容非 POSIX 路径）。 */
-function onPath(bin: string): boolean {
+/** 在 PATH 上查可执行文件，返回**跟着软链解析后的真实路径**（用 `which` 语义，兼容非 POSIX 路径）。 */
+function resolveBinary(bin: string): string | null {
 	try {
 		const out = execFileSync(process.platform === "win32" ? "where" : "which", [bin], {
 			stdio: ["ignore", "pipe", "ignore"],
 			timeout: 3000,
 		});
-		return out.toString().trim().length > 0;
+		const first = out
+			.toString()
+			.split(/\r?\n/)
+			.map((s) => s.trim())
+			.filter(Boolean)[0];
+		return first ? realpathSync(first) : null;
 	} catch {
-		return false;
+		return null;
 	}
+}
+
+/** 可执行文件是否在 PATH 里。 */
+function onPath(bin: string): boolean {
+	return resolveBinary(bin) !== null;
+}
+
+/**
+ * 从 jev-uf 包装脚本里抠出它写死的 repo 路径。
+ * 包装脚本是「这个工具装在哪」的唯一事实源：路径改了它跟着改，探针跟着它就永远不会漏。
+ */
+function repoFromWrapper(scriptPath: string): string | null {
+	try {
+		const m = readFileSync(scriptPath, "utf-8").match(
+			/^\s*(?:REPO|REPO_DIR|UF_DIR)=["']?([^"'\n]+)["']?/m,
+		);
+		if (!m) return null;
+		return m[1]
+			.trim()
+			.replace(/^\$\{?HOME\}?/, homedir())
+			.replace(/^~(?=\/|$)/, homedir());
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * 找 jev-ultrafast 的安装目录。三条线索按可靠性排序：
+ *   1. `jev-uf` 在 PATH 上 → 读它解析真实 repo（装了就在，与目录名无关）
+ *   2. JEV_ULTRAFAST_DIR 环境变量（bootstrap 与扩展共用的覆盖口）
+ *   3. 常见默认位置：~/Project/jev-ultrafast（bootstrap 默认）、~/dev/jev-ultrafast
+ * 只看标记文件 pyproject.toml，与 bootstrap 的判定一致。
+ */
+function findUltrafastDir(): { dir: string; via: string } | null {
+	const wrapper = resolveBinary("jev-uf");
+	if (wrapper) {
+		const dir = repoFromWrapper(wrapper);
+		if (dir && existsSync(join(dir, "pyproject.toml")))
+			return { dir, via: `jev-uf → ${dir}` };
+	}
+
+	const env = process.env.JEV_ULTRAFAST_DIR;
+	if (env && existsSync(join(env, "pyproject.toml")))
+		return { dir: env, via: "JEV_ULTRAFAST_DIR" };
+
+	for (const d of [
+		join(homedir(), "Project", "jev-ultrafast"),
+		join(homedir(), "dev", "jev-ultrafast"),
+	]) {
+		if (existsSync(join(d, "pyproject.toml"))) return { dir: d, via: `默认位置 ${d}` };
+	}
+	return null;
 }
 
 interface Availability {
@@ -117,33 +174,43 @@ interface Availability {
 	hint?: string;
 }
 
+interface Detection {
+	avail: Record<ToolId, Availability>;
+	/** jev-ultrafast 实际找到的位置（未找到则 null），带上是怎么找到的 */
+	ultrafast: { dir: string; via: string } | null;
+}
+
 /**
  * 检测清单里每个工具是否真的可用。检测项与 `bootstrap/install-jev-stack.sh` 的
  * 安装步骤一一对应，装了就能被认出来。
  */
-function detectAvailability(): Record<ToolId, Availability> {
+function detectAvailability(): Detection {
 	const pkgs = piPackages();
 	const hasWebAccess = pkgs.includes("pi-web-access");
 	const hasBrowser = onPath("agent-browser");
-	const ufDir = process.env.JEV_ULTRAFAST_DIR ?? join(homedir(), "Project", "jev-ultrafast");
-	const hasUltrafast = existsSync(join(ufDir, "pyproject.toml"));
+	const ultrafast = findUltrafastDir();
 
 	return {
-		fetch_content: hasWebAccess
-			? { available: true }
-			: { available: false, hint: "pi install npm:pi-web-access" },
-		web_search: hasWebAccess
-			? { available: true }
-			: { available: false, hint: "pi install npm:pi-web-access" },
-		"agent-browser": hasBrowser
-			? { available: true }
-			: { available: false, hint: "npm install -g agent-browser" },
-		"jev-ultrafast": hasUltrafast
-			? { available: true }
-			: {
-					available: false,
-					hint: "git clone https://github.com/browser-use/jev-ultrafast ~/Project/jev-ultrafast && uv sync",
-				},
+		avail: {
+			fetch_content: hasWebAccess
+				? { available: true }
+				: { available: false, hint: "pi install npm:pi-web-access" },
+			web_search: hasWebAccess
+				? { available: true }
+				: { available: false, hint: "pi install npm:pi-web-access" },
+			"agent-browser": hasBrowser
+				? { available: true }
+				: { available: false, hint: "npm install -g agent-browser" },
+			"jev-ultrafast": ultrafast
+				? { available: true }
+				: {
+						available: false,
+						hint:
+							"git clone https://github.com/browser-use/jev-ultrafast ~/dev/jev-ultrafast && uv sync" +
+							"（或设 JEV_ULTRAFAST_DIR 指向已有安装，也可把 jev-uf 放进 PATH）",
+					},
+		},
+		ultrafast,
 	};
 }
 
@@ -247,7 +314,7 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 			const { task, unattended } = params as { task: string; unattended?: boolean };
 
 			// ── 0. 可用性检测（清单写死，但设备实际装了什么不一定） ──
-			const avail = detectAvailability();
+			const { avail, ultrafast } = detectAvailability();
 			const usable = TOOLS.filter((t) => avail[t.id].available);
 			const missing = TOOLS.filter((t) => !avail[t.id].available);
 			// 全部缺失时不能剔完候选，否则无从路由：退回全清单并在输出里警示。
@@ -376,6 +443,8 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 				}
 				L.push("");
 			}
+			// 探针本身也会错（路径猜错、软链、改名）。把“怎么认出来的”写出来，误判当场可见。
+			if (ultrafast) L.push(`_探针: jev-ultrafast 识别于 ${ultrafast.via}_`, "");
 
 			const fired = Object.entries(rule.signals)
 				.filter(([, v]) => v)
@@ -448,6 +517,8 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 					unattended: Boolean(unattended),
 					available: Object.fromEntries(TOOLS.map((t) => [t.id, avail[t.id].available])),
 					missing_tools: missing.map((t) => t.id),
+					ultrafast_dir: ultrafast?.dir ?? null,
+					ultrafast_detected_via: ultrafast?.via ?? null,
 				},
 			};
 		},
