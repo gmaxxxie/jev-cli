@@ -103,11 +103,33 @@ jev "payout failed 3x in a row" -q '{"urgent":{"type":"noul",\
 |------|-------------|---------|
 | `state` | State description; `@` prefix reads from file; otherwise reads stdin | — |
 | `-q` | Question, repeatable; `name:instructions` shorthand or full JSON | defaults to is_urgent |
-| `-m` | Model ID | `typesafe/jev-1.13` |
-| `-e` | Endpoint | `https://openrouter.ai/api/alpha/decisions` |
-| `--key` | Explicit API key | env / auth.json |
+| `-g` | Gateway: `openrouter` \| `official` | `~/.pi/agent/jev-gateway.json`, else `openrouter` |
+| `-m` | Model ID | per gateway (`typesafe/jev-1.13` / `jev-latest`) |
+| `-e` | Endpoint | per gateway |
+| `--key` | Explicit API key | env / auth file (per gateway) |
+| `--use <gw>` | Switch the persisted default gateway, then exit | — |
+| `--status` | Show resolved gateway / endpoint / model / key availability, then exit | — |
 | `-t` | Timeout seconds | 60 |
 | `-j` | Raw JSON output | — |
+
+### Gateways (OpenRouter vs TypeSafe direct)
+
+Two interchangeable paths to the same model at the same price ($0.042/1M input, output free) — only the gateway differs:
+
+| Gateway | Endpoint | Model | Key source |
+|---------|----------|-------|------------|
+| `openrouter` | `https://openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` | `OPENROUTER_API_KEY` → `~/.pi/agent/auth.json` `openrouter.key` |
+| `official` | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` → `~/.pi/agent/pi-typesafe/auth.json` `apiKey` |
+
+```bash
+jev --status              # which gateway is active
+jev --use official        # switch to TypeSafe direct (persisted)
+jev --use openrouter      # switch back
+```
+
+Resolution order (high → low): CLI flag (`-g` / `-e` / `-m`) > env (`JEV_GATEWAY` / `JEV_ENDPOINT` / `JEV_MODEL`) > `~/.pi/agent/jev-gateway.json` > default `openrouter`. The request body and response shape are identical on both paths; only `provider` and `usage.cost` are OpenRouter-only extras (the CLI estimates cost from input tokens when absent).
+
+Because `jev`, `jev_triage`, `jev_route`, `dual-gate/reflex`, and AutoWriteO's `jev_bridge` all shell out to this one CLI, switching the gateway once switches all of them.
 
 ## pi extensions
 
@@ -131,6 +153,8 @@ Registers a `/jev` slash command for configuring the CLI defaults inside pi:
 - `/jev reset` — restore defaults (delete config file)
 
 Config is stored in `~/.pi/agent/jev-config.json` (model / endpoint / timeoutMs / defaultQuestion); the API key goes into `~/.pi/agent/auth.json` (`openrouter.key`, same as `install.sh`). The `jev` tool reads this config and passes `-m` / `-e` / `-t` to the CLI, so defaults you set here apply to LLM-driven calls too.
+
+> **Note:** the CLI's gateway (`~/.pi/agent/jev-gateway.json`) and this extension config are independent. A model/endpoint pinned in `jev-config.json` is passed as `-m` / `-e`, which **outranks** the gateway preset — so after `jev --use official`, clear or update `/jev config` if you had pinned OpenRouter values there.
 
 ### `jev_triage` — multi-candidate decision support
 

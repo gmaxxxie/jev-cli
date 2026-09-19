@@ -29,10 +29,23 @@ jev — TypeSafe Jev System One 决策模型 CLI（走 OpenRouter Decisions API�
   # 从文件读 state
   jev @state.txt -q ok:一切正常吗?
 
+API 网关（OpenRouter / TypeSafe 官方直连，可手动切换）：
+  两条通道模型与价格相同（$0.042/1M input，output 免费），只是网关不同。
+
+    jev --status              # 看当前走哪个网关
+    jev --use official        # 切到 TypeSafe 官方直连（api.typesafe.ai）
+    jev --use openrouter      # 切回 OpenRouter
+
+  优先级（高 → 低）：命令行 flag > 环境变量 > ~/.pi/agent/jev-gateway.json > 默认 openrouter
+    -g/--gateway  JEV_GATEWAY     显式指定本次调用的网关
+    -e/--endpoint JEV_ENDPOINT    显式指定端点
+    -m/--model    JEV_MODEL       显式指定模型
+
 API Key 来源（按优先级）：
-  1. --key
-  2. 环境变量 OPENROUTER_API_KEY
-  3. ~/.pi/agent/auth.json 里的 openrouter.key
+  1. --key / JEV_API_KEY
+  2. 按网关自动选：
+     openrouter → OPENROUTER_API_KEY → ~/.pi/agent/auth.json 的 openrouter.key
+     official   → TYPESAFE_API_KEY   → ~/.pi/agent/pi-typesafe/auth.json 的 apiKey
 """
 import argparse
 import json
@@ -41,31 +54,96 @@ import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
-DEFAULT_MODEL = "typesafe/jev-1.13"
+GATEWAY_PRESETS = {
+    "openrouter": {
+        "endpoint": "https://openrouter.ai/api/alpha/decisions",
+        "model": "typesafe/jev-1.13",
+        "label": "OpenRouter Decisions（经 OpenRouter 转发）",
+    },
+    "official": {
+        "endpoint": "https://api.typesafe.ai/v1/systemone",
+        "model": "jev-latest",
+        "label": "TypeSafe 官方直连",
+    },
+}
+DEFAULT_GATEWAY = "openrouter"
+
+# 兼容旧名：默认网关的端点/模型
+DEFAULT_ENDPOINT = GATEWAY_PRESETS[DEFAULT_GATEWAY]["endpoint"]
+DEFAULT_MODEL = GATEWAY_PRESETS[DEFAULT_GATEWAY]["model"]
+
 AUTH_JSON = os.path.expanduser("~/.pi/agent/auth.json")
+TYPESAFE_AUTH_JSON = os.path.expanduser("~/.pi/agent/pi-typesafe/auth.json")
+GATEWAY_CONFIG = os.path.expanduser("~/.pi/agent/jev-gateway.json")
 
 VALID_TYPES = ("noul", "choice", "score")
 
+# 计价：$0.042 / 1M input tokens，output 免费（两条网关同价）。
+USD_PER_MTOK = 0.042
 
-def resolve_api_key(explicit=None):
+
+def resolve_gateway(explicit=None):
+    """flag > JEV_GATEWAY > jev-gateway.json > 默认 openrouter"""
+    g = explicit or os.environ.get("JEV_GATEWAY")
+    if not g:
+        try:
+            with open(GATEWAY_CONFIG, encoding="utf-8") as f:
+                g = (json.load(f) or {}).get("gateway")
+        except FileNotFoundError:
+            pass
+        except (json.JSONDecodeError, OSError) as e:
+            raise SystemExit(f"读取 {GATEWAY_CONFIG} 失败: {e}") from e
+    g = (g or DEFAULT_GATEWAY).strip().lower()
+    if g not in GATEWAY_PRESETS:
+        raise SystemExit(
+            f"未知网关 {g!r}；可选：{', '.join(GATEWAY_PRESETS)}"
+        )
+    return g
+
+
+def resolve_endpoint(explicit, gateway):
+    return explicit or os.environ.get("JEV_ENDPOINT") or GATEWAY_PRESETS[gateway]["endpoint"]
+
+
+def resolve_model(explicit, gateway):
+    return explicit or os.environ.get("JEV_MODEL") or GATEWAY_PRESETS[gateway]["model"]
+
+
+def _read_auth(path, pick, hint):
+    try:
+        with open(path, encoding="utf-8") as f:
+            key = pick(json.load(f))
+    except FileNotFoundError:
+        key = None
+    if key:
+        return key
+    raise SystemExit(f"未找到 {hint}")
+
+
+def resolve_api_key(explicit=None, gateway=DEFAULT_GATEWAY):
     if explicit:
         return explicit
+    common = os.environ.get("JEV_API_KEY")
+    if common:
+        return common
+    if gateway == "official":
+        env = os.environ.get("TYPESAFE_API_KEY")
+        if env:
+            return env
+        return _read_auth(
+            TYPESAFE_AUTH_JSON,
+            lambda a: a.get("apiKey"),
+            f"官方 TypeSafe API key：请用 --key / JEV_API_KEY / TYPESAFE_API_KEY，"
+            f"或在 {TYPESAFE_AUTH_JSON} 里配置 apiKey（pi 里跑 /typesafe login）",
+        )
     env = os.environ.get("OPENROUTER_API_KEY")
     if env:
         return env
-    try:
-        with open(AUTH_JSON, encoding="utf-8") as f:
-            auth = json.load(f)
-        or_cfg = auth.get("openrouter") or {}
-        key = or_cfg.get("key")
-        if key:
-            return key
-    except FileNotFoundError:
-        pass
-    raise SystemExit(
-        "未找到 OpenRouter API key：请用 --key 传入，或设置 OPENROUTER_API_KEY，"
-        f"或在 {AUTH_JSON} 里配置 openrouter.key"
+    return _read_auth(
+        AUTH_JSON,
+        lambda a: (a.get("openrouter") or {}).get("key"),
+        f"OpenRouter API key：请用 --key / JEV_API_KEY / OPENROUTER_API_KEY，"
+        f"或在 {AUTH_JSON} 里配置 openrouter.key",
     )
 
 
@@ -122,18 +200,89 @@ def call_decisions(state, questions, model, endpoint, api_key, timeout):
         raise SystemExit(f"HTTP {e.code}: {body}") from e
 
 
+def _key_available(gateway):
+    """key 是否存在（不打印 key 本身）。"""
+    try:
+        resolve_api_key(None, gateway)
+        return True
+    except SystemExit:
+        return False
+
+
+def _describe(gateway):
+    p = GATEWAY_PRESETS[gateway]
+    return (f"网关:   {gateway}  ({p['label']})\n"
+            f"端点:   {resolve_endpoint(None, gateway)}\n"
+            f"模型:   {resolve_model(None, gateway)}\n"
+            f"key:    {'已就绪' if _key_available(gateway) else '缺失'}")
+
+
+def do_switch(gateway):
+    g = (gateway or "").strip().lower()
+    if g not in GATEWAY_PRESETS:
+        raise SystemExit(f"未知网关 {gateway!r}；可选：{', '.join(GATEWAY_PRESETS)}")
+    os.makedirs(os.path.dirname(GATEWAY_CONFIG), exist_ok=True)
+    tmp = GATEWAY_CONFIG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"gateway": g}, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, GATEWAY_CONFIG)
+    print(f"已切换默认网关 → {g}\n")
+    print(_describe(g))
+    if not _key_available(g):
+        print("\n提示：该网关缺 key，调用会失败。")
+        if g == "official":
+            print("  pi 里跑 /typesafe login，或设置 TYPESAFE_API_KEY")
+        else:
+            print("  设置 OPENROUTER_API_KEY，或配置 ~/.pi/agent/auth.json 的 openrouter.key")
+    print(f"\n配置写入 {GATEWAY_CONFIG}（可用 JEV_GATEWAY 环境变量临时覆盖）")
+    return 0
+
+
+def do_status():
+    persisted = None
+    try:
+        with open(GATEWAY_CONFIG, encoding="utf-8") as f:
+            persisted = (json.load(f) or {}).get("gateway")
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"（{GATEWAY_CONFIG} 读取失败: {e}）", file=sys.stderr)
+    print(f"配置文件: {GATEWAY_CONFIG} → {persisted or '（不存在）'}")
+    for env_name in ("JEV_GATEWAY", "JEV_ENDPOINT", "JEV_MODEL"):
+        if os.environ.get(env_name):
+            print(f"环境变量: {env_name}={os.environ[env_name]}  ← 覆盖配置文件")
+    print()
+    print(_describe(resolve_gateway(None)))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("state", nargs="?", help="程序状态描述；以 @ 开头则从文件读取")
     ap.add_argument("-q", "--question", action="append", default=[],
                     help="name:type:instructions[...]，可多次（type: noul/choice/score）")
-    ap.add_argument("-m", "--model", default=DEFAULT_MODEL, help=f"模型 ID（默认 {DEFAULT_MODEL}）")
-    ap.add_argument("-e", "--endpoint", default=DEFAULT_ENDPOINT)
-    ap.add_argument("--key", help="OpenRouter API key")
+    ap.add_argument("-m", "--model", default=None,
+                    help="模型 ID（默认随网关：openrouter=typesafe/jev-1.13，official=jev-latest）")
+    ap.add_argument("-e", "--endpoint", default=None, help="端点（默认随网关）")
+    ap.add_argument("-g", "--gateway", default=None,
+                    help=f"网关：{' | '.join(GATEWAY_PRESETS)}（默认读 {GATEWAY_CONFIG}，否则 {DEFAULT_GATEWAY}）")
+    ap.add_argument("--key", help="API key（默认按网关自动解析）")
+    ap.add_argument("--use", metavar="GATEWAY",
+                    help=f"切换默认网关并持久化到 {GATEWAY_CONFIG}，然后退出")
+    ap.add_argument("--status", action="store_true", help="显示当前网关/端点/模型/key 状态，然后退出")
     ap.add_argument("-t", "--timeout", type=int, default=60)
     ap.add_argument("-j", "--json", action="store_true", help="输出原始 JSON（含 usage）")
     args = ap.parse_args()
 
+    if args.use:
+        return do_switch(args.use)
+    if args.status:
+        return do_status()
+
+    gateway = resolve_gateway(args.gateway)
+    endpoint = resolve_endpoint(args.endpoint, gateway)
+    model = resolve_model(args.model, gateway)
     if args.state is None:
         print("（从 stdin 读取 state，Ctrl-D 结束）", file=sys.stderr)
         state = sys.stdin.read().strip()
@@ -155,15 +304,16 @@ def main():
             }
         }
 
-    api_key = resolve_api_key(args.key)
-    result = call_decisions(state=state, questions=questions, model=args.model,
-                            endpoint=args.endpoint, api_key=api_key, timeout=args.timeout)
+    api_key = resolve_api_key(args.key, gateway)
+    result = call_decisions(state=state, questions=questions, model=model,
+                            endpoint=endpoint, api_key=api_key, timeout=args.timeout)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
-    print("模型: %s  provider: %s" % (result.get("model"), result.get("provider")))
+    print("模型: %s  provider: %s  网关: %s"
+          % (result.get("model"), result.get("provider") or "typesafe", gateway))
     for name, ans in result.get("answers", {}).items():
         qtype = ans.get("type")
         print("- %s (%s):" % (name, qtype), end=" ")
@@ -178,8 +328,15 @@ def main():
             print(json.dumps(ans, ensure_ascii=False))
     u = result.get("usage") or {}
     if u:
-        print("usage: input=%s output=%s cost=$%.6f"
-              % (u.get("input_tokens"), u.get("output_tokens"), u.get("cost", 0)))
+        # 官方直连不返回 cost（output 免费，按 $0.042/1M input 自算）；OpenRouter 会直接给。
+        cost = u.get("cost")
+        if cost is None and u.get("input_tokens") is not None:
+            cost = u["input_tokens"] / 1_000_000 * USD_PER_MTOK
+            cost_note = "（按 $%.3f/1M input 估算）" % USD_PER_MTOK
+        else:
+            cost_note = ""
+        print("usage: input=%s output=%s cost=$%.6f%s"
+              % (u.get("input_tokens"), u.get("output_tokens"), cost or 0, cost_note))
 
 
 if __name__ == "__main__":
