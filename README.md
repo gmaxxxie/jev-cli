@@ -69,7 +69,7 @@ pi install git:github.com/gmaxxxie/jev-cli
 # 3. API key — resolved per gateway, highest priority first
 #    official (default):
 #      a. TYPESAFE_API_KEY environment variable
-#      b. ~/.pi/agent/pi-typesafe/auth.json  {"apiKey": "..."}   (pi: /typesafe login)
+#      b. ~/.pi/agent/pi-typesafe/auth.json  {"apiKey": "..."}   (jev CLI 读取；pi-typesafe 扩展已退役)
 #    openrouter (alternative):
 #      a. OPENROUTER_API_KEY environment variable
 #      b. ~/.pi/agent/auth.json  {"openrouter": {"key": "sk-or-xxx"}}
@@ -186,7 +186,7 @@ from git history.
 
 ## 安装到新设备（整套 Jev 栈）
 
-在一台新机器上复现本机的完整 Jev 环境（`typesafe_evaluate` + `jev` + 每日花费闸门 + agent 分工文档）：
+在一台新机器上复现本机的完整 Jev 环境（`jev` CLI + `jev` 工具 + 网页/信息工具 + agent 分工文档）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash
@@ -198,20 +198,17 @@ curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/ins
 bash bootstrap/install-jev-stack.sh
 ```
 
-脚本是**幂等**的（可重复运行，不会重复追加配置），会做八件事：
+脚本是**幂等**的（可重复运行，不会重复追加配置），会做七件事：
 
 1. 预检 `python3` / `pi` / `git`
-2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli`（已装则跳过）
+2. `pi install git:github.com/gmaxxxie/jev-cli`（已装则跳过）
 3. 安装网页/信息工具：`npm:pi-web-access`（`fetch_content` / `web_search`）、`npm i -g agent-browser`、以及 `git clone` + `uv sync` 的 `jev-ultrafast`
 4. 定位仓库并建 `~/.local/bin/jev` 软链（复用 `install.sh`，网络安装时自动 `git clone` 到 `~/.local/share/jev-cli`）
 5. 写 `~/.pi/agent/jev-gateway.json` → `official`
-6. 把 `PI_TYPESAFE_ENABLED=1` + 三个每日上限插进 `~/.zshrc` / `~/.bashrc` / `~/.profile` 的 **interactive guard 之前**（否则无头 pi / 子 agent 拿不到）
-7. 把「Jev 双通道分工」段写进 `~/.pi/agent/AGENTS.md`
-8. 交互式提示输入 API key（**不回显、不进 shell 历史**），然后用一次免费 `GET /v1/models` 做活验证
+6. 把「Jev 判断/决策工具」段写进 `~/.pi/agent/AGENTS.md`
+7. 交互式提示输入 API key（**不回显、不进 shell 历史**），然后用一次免费 `GET /v1/models` 做活验证
 
-rc 文件按 `$SHELL` 选：macOS 默认 zsh，**不读 `~/.bashrc`**，写错文件会让 `typesafe_evaluate` 静默保持禁用。
-
-选项：`--update`（刷新已装的）、`--no-key`（跳过 key，之后自己 `/typesafe login`）、`--no-agents`、`--no-bashrc`、`--dry-run`。
+选项：`--update`（刷新已装的）、`--no-key`（跳过 key，之后自己 `export TYPESAFE_API_KEY`）、`--no-agents`、`--dry-run`。（`--no-bashrc` 已废弃：rc 环境变量块随 pi-typesafe 扩展一并退役。）
 
 **只有 API key 和 `jev-ultrafast/.env` 需要人工处理。** 其余全部来自公网（GitHub + npm），不需要从旧机器拷文件。脚本失败时返回非 0 退出码（`--check` 活验证不通过也会返回 1），可用于 CI / 自动化。
 
@@ -225,16 +222,12 @@ curl -fsSL .../bootstrap/install-jev-stack.sh | bash -s -- --update   # bootstra
 ```
 
 只跑 `pi update --extensions` 不够：它只更新包，**不会**补上 bootstrap 负责的那些东西。重跑
-bootstrap 才会装上前版没有的路由目标工具、并修好前版写错位置的配置。注意 `pi update` 不带参数
+bootstrap 才会装上前版没有的网页/信息工具。注意 `pi update` 不带参数
 时**只更新 pi 本身**，扩展要加 `--extensions`。
 
 `--update` 让脚本刷新已装的东西；不加时只装缺的，所以重复运行不会静默升级你的包。
 
-有一处会自动修复：旧版把 rc 文件写死 `~/.bashrc`，在 zsh 机器上那个 `PI_TYPESAFE_*` 块落在 zsh
-根本不读的文件里，`typesafe_evaluate` 一直静默禁用。升级时脚本会把那个块注释掉（注明原因、留备份），
-再写到正确的 rc 文件。没有这步的话，两个文件都会说"已有块"，结果谁都不修。
-
-安装后需要：新开终端（让环境变量生效）+ 重启 pi。验证：
+安装后需要：重启 pi。验证：
 
 ```bash
 jev --status --check      # 网关 + key 活验证
@@ -243,7 +236,7 @@ jev --status --check      # 网关 + key 活验证
 
 ## Installing on a new device (full stack)
 
-To reproduce the complete Jev environment (`typesafe_evaluate` + `jev` + daily spend caps + the agent-facing routing doc) on another machine:
+To reproduce the complete Jev environment (the `jev` CLI + `jev` tool + web/information tools + the agent-facing routing doc) on another machine:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash
@@ -251,20 +244,17 @@ curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/ins
 
 Or from a clone: `bash bootstrap/install-jev-stack.sh`.
 
-The script is **idempotent** (safe to re-run; it will not append duplicate config) and performs eight steps:
+The script is **idempotent** (safe to re-run; it will not append duplicate config) and performs seven steps:
 
 1. Preflight `python3` / `pi` / `git`
-2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli` (skipped if present)
+2. `pi install git:github.com/gmaxxxie/jev-cli` (skipped if present)
 3. Install the web/information tools: `npm:pi-web-access` (`fetch_content` / `web_search`), `npm install -g agent-browser`, and `git clone` + `uv sync` of `jev-ultrafast`
 4. Locate the repo and symlink `~/.local/bin/jev` (reuses `install.sh`; falls back to `git clone` into `~/.local/share/jev-cli` for the network install)
 5. Write `~/.pi/agent/jev-gateway.json` → `official`
-6. Insert `PI_TYPESAFE_ENABLED=1` + the three daily caps into `~/.zshrc` / `~/.bashrc` / `~/.profile` **before the interactive guard** (otherwise headless pi / sub-agents never see them)
-7. Add the "Jev dual-channel routing" section to `~/.pi/agent/AGENTS.md`
-8. Prompt for the API key (no echo, never in shell history), then live-verify it with one free `GET /v1/models`
+6. Add the "Jev decision tools" section to `~/.pi/agent/AGENTS.md`
+7. Prompt for the API key (no echo, never in shell history), then live-verify it with one free `GET /v1/models`
 
-The rc file is chosen from `$SHELL`: macOS defaults to zsh and never reads `~/.bashrc`, so writing the caps there would silently leave `typesafe_evaluate` disabled.
-
-Flags: `--update` (refresh what is already installed), `--no-key` (skip key entry, use `/typesafe login` later), `--no-agents`, `--no-bashrc`, `--dry-run`.
+Flags: `--update` (refresh what is already installed), `--no-key` (skip key entry, `export TYPESAFE_API_KEY` later), `--no-agents`, `--dry-run`. (`--no-bashrc` is deprecated: the rc env block was retired together with the pi-typesafe extension.)
 
 **Only the API key and `jev-ultrafast/.env` need manual handling.** Everything else comes from the public internet (GitHub + npm) — no need to copy files off the old machine. The script exits non-zero on failure (including a failing `--check` live verification), so it is safe to use in CI / automation.
 
@@ -279,20 +269,13 @@ curl -fsSL .../bootstrap/install-jev-stack.sh | bash -s -- --update   # bootstra
 
 `pi update --extensions` alone refreshes the packages but **not** the things the bootstrap owns, so
 it is not enough to move an old device to the current version. Re-running the bootstrap picks up
-what the old version never installed (the web/information tool set) and repairs the config it wrote
-to the wrong place. Note `pi update` with no flags updates **pi itself only** — extensions need
-`--extensions`.
+what the old version never installed (the web/information tool set). Note `pi update` with no flags
+updates **pi itself only** — extensions need `--extensions`.
 
 `--update` makes the bootstrap refresh what is already present; without it the script only installs
 what is missing, so a re-run never silently upgrades your packages.
 
-One repair is automatic: versions before this one hardcoded `~/.bashrc`, so on a zsh machine the
-`PI_TYPESAFE_*` block landed in a file zsh never reads and `typesafe_evaluate` stayed silently
-disabled. On upgrade the bootstrap comments that block out (labelled with the reason, backed up)
-and writes the real one to the correct rc file. Without this, both files would report "block already
-present" and neither would be fixed.
-
-Afterwards: open a new terminal (so the env vars apply) and restart pi. Verify with:
+Afterwards: restart pi. Verify with:
 
 ```bash
 jev --status --check      # gateway + live key check

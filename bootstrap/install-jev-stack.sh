@@ -3,13 +3,15 @@
 # install-jev-stack.sh — 在一台设备上装好/升级整套 Jev 栈（幂等，可重复运行）
 #
 # 装什么（全部来自公网，无需从旧机器拷文件）：
-#   1. pi 包 npm:pi-typesafe        → typesafe_evaluate 工具（官方直连批量判断）
-#   2. pi 包 git:…/jev-cli          → jev 工具
-#   3. 路由目标工具                → pi-web-access / agent-browser / jev-ultrafast
-#   4. ~/.local/bin/jev 软链        → 指向 jev-cli 仓库 bin/jev（单一事实源）
-#   5. shell rc 环境变量块         → PI_TYPESAFE_ENABLED=1 + 每日花费硬闸门
-#   6. ~/.pi/agent/AGENTS.md 分工段 → 告诉 agent 什么场景用哪条通道
-#   7. 网关默认值                   → jev-gateway.json = official
+#   1. pi 包 git:…/jev-cli          → jev 工具
+#   2. 网页/信息工具                → pi-web-access / agent-browser / jev-ultrafast
+#   3. ~/.local/bin/jev 软链        → 指向 jev-cli 仓库 bin/jev（单一事实源）
+#   4. ~/.pi/agent/AGENTS.md 分工段 → 告诉 agent 什么场景用哪条通道
+#   5. 网关默认值                   → jev-gateway.json = official
+#   6. API key                      → ~/.pi/agent/pi-typesafe/auth.json（jev CLI 读取）
+#
+# 注：pi-typesafe 扩展（typesafe_evaluate）与 shell rc 环境变量块已于 2026-09 退役，
+#     本脚本不再安装。但 auth.json 里的 key 仍由 jev CLI 使用，故 key 部分保留。
 #
 # 需要手动做的只有两件：API key，以及 jev-ultrafast 的 .env。
 #
@@ -18,14 +20,14 @@
 #   # 或在仓库里：
 #   bash bootstrap/install-jev-stack.sh
 #
-# 升级已装的旧版（拉最新包 + 装上前版没有的路由工具 + 把错位置的 rc 块挑正）：
+# 升级已装的旧版（拉最新包 + 装上前版没有的网页/信息工具）：
 #   curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash -s -- --update
 #
 # 选项：
 #   --update      已装的包也拉最新（默认不动已装的包，只装缺的）
-#   --no-key      跳过 key 交互（稍后自己 /typesafe login 或 export TYPESAFE_API_KEY）
+#   --no-key      跳过 key 交互（稍后自己 export TYPESAFE_API_KEY）
 #   --no-agents   不写 ~/.pi/agent/AGENTS.md
-#   --no-bashrc   不写 shell rc 环境变量
+#   --no-bashrc   已废弃（rc 环境变量块已退役），保留仅为兼容旧调用
 #   --dry-run     只打印将要做什么，不改任何东西
 #   -h, --help    帮助
 # =============================================================================
@@ -55,15 +57,14 @@ esac
 BASHRC="$RC_FILE"   # 兼容旧变量名
 # zsh 里 interactive guard 的写法与 bash 不同（默认无 guard，但常见 [[ -o interactive ]] / ZSH_EVAL_CONTEXT）
 
-BASHRC_MARKER="# ===== pi-typesafe: 默认启用 Jev 批量判断工具 ====="
-AGENTS_MARKER="## 判断 / 决策工具分工（Jev 双通道）"
+AGENTS_MARKER="## 判断 / 决策工具（Jev）"
 
 DO_KEY=1 DO_AGENTS=1 DO_BASHRC=1 DRY_RUN=0 DO_UPDATE=0
 for arg in "$@"; do
   case "$arg" in
     --no-key) DO_KEY=0 ;;
     --no-agents) DO_AGENTS=0 ;;
-    --no-bashrc) DO_BASHRC=0 ;;   # 保留旧名，含义=不写 rc 文件
+    --no-bashrc) DO_BASHRC=0 ;;   # 已废弃（rc 块已退役），保留仅为兼容
     --dry-run) DRY_RUN=1 ;;
     --update) DO_UPDATE=1 ;;      # 已装的包也拉最新（升级旧设备用）
     -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -83,11 +84,11 @@ warn() { printf '    %s!%s %s\n' "$Y" "$N" "$1"; }
 die()  { printf '    %s✗%s %s\n' "$R" "$N" "$1" >&2; exit 1; }
 run()  { if [[ $DRY_RUN == 1 ]]; then printf '    %s[dry-run]%s %s\n' "$D" "$N" "$*"; else "$@"; fi; }
 
-printf '%s\n' "${B}整套 Jev 栈安装${N}  ${D}(pi-typesafe + jev-cli + CLI + 环境变量 + 分工文档)${N}"
+printf '%s\n' "${B}整套 Jev 栈安装${N}  ${D}(jev-cli + CLI + 网页工具 + 分工文档)${N}"
 [[ $DRY_RUN == 1 ]] && warn "dry-run 模式：只打印，不落盘"
 
 # -----------------------------------------------------------------------------
-step "1/8 预检依赖"
+step "1/7 预检依赖"
 # -----------------------------------------------------------------------------
 command -v python3 >/dev/null 2>&1 || {
   warn "缺少 python3（jev CLI 是 Python 脚本）"
@@ -110,7 +111,7 @@ ok "git ${git_ver##* }"
 ok "shell: $SHELL_NAME → rc 文件 $RC_FILE"
 
 # -----------------------------------------------------------------------------
-step "2/8 安装 pi 包"
+step "2/7 安装 pi 包"
 # -----------------------------------------------------------------------------
 installed_pkgs="$(pi list 2>/dev/null || true)"
 has_pkg() { grep -qF "$1" <<<"$installed_pkgs"; }
@@ -133,11 +134,10 @@ install_or_update() {
   fi
 }
 
-install_or_update "npm:pi-typesafe" "npm:pi-typesafe"
 install_or_update "$REPO_GIT" "$REPO_GIT"
 
 # -----------------------------------------------------------------------------
-step "3/8 网页/信息工具"
+step "3/7 网页/信息工具"
 # -----------------------------------------------------------------------------
 # 这些工具来自三个独立安装源。jev_route 扩展已退役（清单现由 web-control-router
 # skill 维护），但工具本身仍要装，否则网页/浏览器手段会缺失。
@@ -208,7 +208,7 @@ if [[ -f "$UF_DIR/pyproject.toml" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-step "4/8 定位仓库并建 CLI 软链"
+step "4/7 定位仓库并建 CLI 软链"
 # -----------------------------------------------------------------------------
 REPO_DIR=""
 if [[ -f "$EXPECTED_REPO_DIR/bin/jev" ]]; then
@@ -227,10 +227,10 @@ fi
 [[ $DRY_RUN == 1 || -f "$REPO_DIR/bin/jev" ]] || die "仓库里没有 bin/jev：$REPO_DIR"
 ok "仓库: $REPO_DIR"
 
-for f in bin/jev extension/jev.ts extension/jev-triage.ts extension/jev-route.ts; do
+for f in bin/jev extension/jev.ts; do
   [[ $DRY_RUN == 1 || -f "$REPO_DIR/$f" ]] || die "仓库缺少 ${f}（拉到的版本不对？）"
 done
-ok "三个扩展 + CLI 脚本齐全"
+ok "CLI 脚本 + jev 扩展齐全"
 
 # 复用仓库自带 install.sh 的软链逻辑（它本地运行时会 ln -sf 而不是 cp）
 run env JEV_SKIP_KEY=1 INSTALL_CLI=1 bash "$REPO_DIR/install.sh"
@@ -254,7 +254,7 @@ case ":$PATH:" in
 esac
 
 # -----------------------------------------------------------------------------
-step "5/8 网关默认值"
+step "5/7 网关默认值"
 # -----------------------------------------------------------------------------
 if [[ -f "$GATEWAY_JSON" ]]; then
   skip "$GATEWAY_JSON 已存在 → $(cat "$GATEWAY_JSON")"
@@ -267,117 +267,26 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-step "6/8 $RC_KIND 环境变量（每日花费硬闸门）"
-# -----------------------------------------------------------------------------
-# 升级旧设备：旧版把 rc 文件写死 ~/.bashrc。若本机是 zsh，那个块永远不会被加载，
-# 而新脚本只会看自己的目标文件 —— 结果两边都“已有块”，谁都不写。
-# 先把错位置的旧块摘掉（注释掉，不删），再按正确位置重写。
-if [[ $DO_BASHRC == 1 && $RC_FILE != "$HOME/.bashrc" && -f "$HOME/.bashrc" ]] \
-   && grep -qxF "$BASHRC_MARKER" "$HOME/.bashrc"; then
-  if [[ $DRY_RUN == 1 ]]; then
-    printf '    %s[dry-run]%s 将停用 ~/.bashrc 里错位置的 pi-typesafe 块（本机 shell 是 %s）\n' \
-      "$D" "$N" "$SHELL_NAME"
-  else
-    cp "$HOME/.bashrc" "$HOME/.bashrc.bak-$(date +%Y%m%d-%H%M%S)"
-    python3 - "$HOME/.bashrc" "$BASHRC_MARKER" "$RC_FILE" "$SHELL_NAME" <<'PY'
-import sys
-path, marker, target, shell = sys.argv[1:5]
-lines = open(path, encoding="utf-8").read().split("\n")
-out, i, n = [], 0, 0
-while i < len(lines):
-    if lines[i].strip() == marker:
-        # 块 = marker 起，到最后一个 PI_TYPESAFE_ export（中间夹杂注释行）
-        j = i + 1
-        while j < len(lines):
-            s = lines[j].strip()
-            if s == "" or s.startswith("#") or s.startswith("export PI_TYPESAFE_"):
-                j += 1
-            else:
-                break
-        out.append(f"# （已停用：位置错误，本机 shell 是 {shell}，应写在 {target}）")
-        for k in range(i + 1, j):
-            out.append(lines[k] if lines[k].lstrip().startswith("#") else "# " + lines[k])
-        n += j - i
-        i = j
-        continue
-    out.append(lines[i])
-    i += 1
-open(path, "w", encoding="utf-8").write("\n".join(out))
-print(f"    已停用 {n} 行错位置的旧块")
-PY
-    ok "~/.bashrc 里错位置的旧块已停用（备份见 ~/.bashrc.bak-*）"
-  fi
-fi
-# -----------------------------------------------------------------------------
-# 必须放在 interactive guard 之前：否则无头 pi / 子 agent 拿不到这些变量，
-# typesafe_evaluate 会静默退回“需会话内手动 enable”。
-BASHRC_BLOCK="$(cat <<'EOF'
-# ===== pi-typesafe: 默认启用 Jev 批量判断工具 =====
-# 无此变量时，typesafe_evaluate 仅在会话内 /typesafe enable 后可用（无头/子 agent 会静默失去判断能力）。
-# 密钥来自 ~/.pi/agent/pi-typesafe/auth.json（/typesafe login 写入），未设置则不生效。
-# 注意：必须放在 interactive guard 之前，否则非交互 shell（无头 pi、子 agent）拿不到。
-export PI_TYPESAFE_ENABLED=1
-# 每日硬闸门（超出则请求在发出前被拒；计数器持久化在 ~/.pi/agent/pi-typesafe/usage.json）
-# 计价 $0.042/1M input，故 $0.5/天 ≈ 1200 万 input tokens ≈ 数千次典型调用。
-export PI_TYPESAFE_MAX_USD_PER_DAY=0.5
-export PI_TYPESAFE_MAX_REQUESTS_PER_DAY=500
-export PI_TYPESAFE_MAX_INPUT_TOKENS_PER_DAY=12000000
-EOF
-)"
-
-if [[ $DO_BASHRC == 0 ]]; then
-  skip "--no-bashrc，跳过"
-elif [[ -f "$RC_FILE" ]] && grep -qF "$BASHRC_MARKER" "$RC_FILE"; then
-  skip "$RC_FILE 已有 pi-typesafe 块"
-else
-  if [[ $DRY_RUN == 1 ]]; then
-    printf '    %s[dry-run]%s 将把环境变量块插入 %s 的 interactive guard 之前\n' "$D" "$N" "$RC_FILE"
-  else
-    [[ -f "$RC_FILE" ]] || : >"$RC_FILE"
-    cp "$RC_FILE" "${RC_FILE}.bak-$(date +%Y%m%d-%H%M%S)"
-    python3 - "$RC_FILE" "$BASHRC_BLOCK" <<'PY'
-import re, sys
-path, block = sys.argv[1], sys.argv[2]
-lines = open(path, encoding="utf-8").read().split("\n")
-# interactive guard 的几种常见写法，插到第一个之前
-guard = re.compile(
-    r'^\s*('
-    r'case\s+\$-|\[\[\s*\$-\s*!=|'
-    r'\[\[\s*-o\s+interactive|case\s+\$ZSH_EVAL_CONTEXT|'
-    r'\[\s*-z\s*"\$PS1"|\[\[\s*-z\s*"\$PS1"'
-    r')'
-)
-idx = next((i for i, l in enumerate(lines) if guard.match(l)), None)
-block_lines = block.split("\n")
-out = lines[:idx] + block_lines + [""] + lines[idx:] if idx is not None else lines + ["", *block_lines, ""]
-open(path, "w", encoding="utf-8").write("\n".join(out))
-print(f"    插入位置: 第 {idx + 1 if idx is not None else len(lines) + 2} 行"
-      f"{'（interactive guard 之前）' if idx is not None else '（文件末尾）'}")
-PY
-    ok "$RC_FILE 已更新（备份见 ${RC_FILE}.bak-*）"
-    warn "当前 shell 未生效：新开终端，或 source $RC_FILE"
-  fi
-fi
-
-# -----------------------------------------------------------------------------
-step "7/8 ~/.pi/agent/AGENTS.md 分工段"
+step "6/7 ~/.pi/agent/AGENTS.md 分工段"
 # -----------------------------------------------------------------------------
 AGENTS_BLOCK="$(cat <<'EOF'
-## 判断 / 决策工具分工（Jev 双通道）
+## 判断 / 决策工具（Jev）
 
-本机有两条 Jev 通道，模型和价格相同（$0.042/1M input，output 免费），差别在网关与封装。**按用途选，不要凭习惯选**：
+只有一个 Jev 工具 + 一个 CLI：
 
 | 场景 | 用什么 |
 |---|---|
-| 批量结构化判断：一次分类/评分/筛选多个对象（≤32 问） | `typesafe_evaluate`（走 `api.typesafe.ai`，官方直连，带花费上限） |
-| 单条状态做少量判断 | `typesafe_evaluate`（同上，避免多开一条链路） |
-| reflex / 本地脚本调用 | `~/.local/bin/jev` CLI（不要改成别的） |
+| 结构化判断（noul/choice/score），单条或少量问题 | `jev` 工具 |
+| 脚本 / reflex / 批量多问 | `~/.local/bin/jev` CLI（`@state.json` 传状态，`-q` 传问题，`-j` 出 JSON） |
 
-- 不要为同一件事同时调两个通道；`typesafe_evaluate` 是多问批量首选，`jev` 自由问答仅在需要非结构化探测时用。
-- `typesafe_evaluate` 默认禁用，需 `/typesafe enable` 或 `PI_TYPESAFE_ENABLED=1`；结果里的 probability/confidence 是判断，不是许可，不构成执行授权。
-- **网关可切（默认 official）**：`jev`/`jev_triage`/`jev_route`/reflex/AutoWriteO 都走 `~/.local/bin/jev`，默认官方直连；需要 OpenRouter 时用 `jev --use openrouter`（`jev --status` 查看，`jev --status --check` 做活验证，`JEV_GATEWAY` 临时覆盖）。两条通道同模型同价（$0.042/1M input）。
-- **模型名不跨网关通用**：官方只认 `jev-latest`/`jev-preview`/`jev-1.13.0`，OpenRouter 只认 `typesafe/jev-1.13`。混用会被 CLI 提前拒绝（不是等 API 报 400）。要可复现就写死 `-m jev-1.13.0`，`jev-latest` 是浮动标签。
-- `~/.local/bin/jev` 是指向 jev-cli 仓库 `bin/jev` 的**软链**（单一事实源），改仓库文件即时生效；重跑 `install.sh` 不会覆盖。
+- 结果里的 probability/confidence 是**判断，不是许可**，不构成执行授权。
+- 网关默认 official 直连：`jev --status` 查看、`--status --check` 做活验证；切 OpenRouter 用 `jev --use openrouter`（或 `JEV_GATEWAY` 临时覆盖）。**模型名不跨网关通用**（official 认 `jev-latest`/`jev-preview`/`jev-1.13.0`，OpenRouter 认 `typesafe/jev-1.13`），要可复现就写死 `-m jev-1.13.0`。
+- `~/.local/bin/jev` → jev-cli 仓库 `bin/jev` 的**软链**（单一事实源），改仓库文件即时生效；重跑 `install.sh` 不会覆盖。
+- key 在 `~/.pi/agent/pi-typesafe/auth.json`（或 `TYPESAFE_API_KEY` 环境变量）。
+
+### 已退役，勿再调用
+`jev_triage`、`jev_route`、`typesafe_evaluate` 已移除；`jev-router`（按 prompt 概率性切模型）已删除。
+替代：多候选决策 → `jev` 的 choice 问题；网页手段路由 → `web-control-router` skill；模型选择 → `autowrite-model-gate`（确定性硬锁）。**不要**用概率性判断去决定模型。
 EOF
 )"
 
@@ -401,19 +310,19 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-step "8/8 API key"
+step "7/7 API key"
 # -----------------------------------------------------------------------------
 key_present() { [[ -n "${TYPESAFE_API_KEY:-}" ]] || { [[ -f "$TYPESAFE_AUTH" ]] && grep -q '"apiKey"' "$TYPESAFE_AUTH"; }; }
 
 if [[ $DO_KEY == 0 ]]; then
-  skip "--no-key，跳过（之后自己 /typesafe login 或 export TYPESAFE_API_KEY）"
+  skip "--no-key，跳过（之后自己 export TYPESAFE_API_KEY）"
 elif key_present; then
   skip "官方 key 已存在（$TYPESAFE_AUTH 或 TYPESAFE_API_KEY）"
 elif [[ ! -t 0 ]]; then
   warn "非交互环境（管道/CI），无法提示输入 key"
   warn "请改用: export TYPESAFE_API_KEY=... 或交互式跑本脚本"
 else
-  printf '    官方直连 key（api.typesafe.ai）。留空跳过，之后可用 /typesafe login。\n'
+  printf '    官方直连 key（api.typesafe.ai）。留空跳过，之后可 export TYPESAFE_API_KEY。\n'
   printf '    %s输入不回显、不写入 shell 历史。%s\n' "$D" "$N"
   read -r -s -p "    TypeSafe API key: " ts_key || true
   printf '\n'
@@ -486,19 +395,19 @@ fi
 
 fail=0
 printf '    pi 包:\n'
-for p in "npm:pi-typesafe" "$REPO_GIT" "npm:pi-web-access"; do
+for p in "$REPO_GIT" "npm:pi-web-access"; do
   if pi list 2>/dev/null | grep -qF "$p"; then printf '      %s✓%s %s\n' "$G" "$N" "$p"; else printf '      %s✗%s %s\n' "$R" "$N" "$p"; fail=1; fi
 done
 
-printf '    jev_route 目标工具:\n'
+printf '    网页/信息工具:\n'
 for c in agent-browser; do
-  if command -v "$c" >/dev/null 2>&1; then printf '      %s✓%s %s\n' "$G" "$N" "$c"; else printf '      %s✗%s %s（jev_route 会推荐但不可用）\n' "$Y" "$N" "$c"; fi
+  if command -v "$c" >/dev/null 2>&1; then printf '      %s✓%s %s\n' "$G" "$N" "$c"; else printf '      %s✗%s %s（web-control-router 会用到但不可用）\n' "$Y" "$N" "$c"; fi
 done
 if [[ -f "$UF_DIR/pyproject.toml" ]]; then
   printf '      %s✓%s jev-ultrafast (%s)\n' "$G" "$N" "$UF_DIR"
   [[ -f "$UF_DIR/.env" ]] || printf '      %s!%s jev-ultrafast 缺 .env（需填密钥）\n' "$Y" "$N"
 else
-  printf '      %s!%s jev-ultrafast 未安装（jev_route 会推荐但不可用）\n' "$Y" "$N"
+  printf '      %s!%s jev-ultrafast 未安装（web-control-router 会用到但不可用）\n' "$Y" "$N"
 fi
 
 if [[ -x "$CLI_LINK" ]]; then
@@ -532,16 +441,13 @@ fi
 cat <<EOF
 
 后续手动步骤
-  1. 新开一个终端（或 source ${RC_FILE}）让 PI_TYPESAFE_* 生效
-  2. 重启 pi，然后确认：
+  1. 重启 pi，然后确认：
        /jev gateway          # 当前网关
        jev --status --check  # 命令行活验证
-  3. 让 agent 实际调一次 typesafe_evaluate，确认工具已注册
-  4. 若上面 jev-ultrafast 报缺 .env：在 $UF_DIR/.env 填密钥
+  2. 让 agent 实际调一次 `jev` 工具，确认已注册
+  3. 若上面 jev-ultrafast 报缺 .env：在 $UF_DIR/.env 填密钥
        TYPESAFE_API_KEY=...（与 pi 的官方 key 可同一把）
        TEXT_MODEL_API_KEY=... TEXT_MODEL_BASE_URL=... TEXT_MODEL=...
-  5. jev_route 自检（应列出四个工具的可用性）:
-       pi -p '调 jev_route，task="登录内部系统导出报表"'  # 看输出里的「本机未安装」段
 
 日常用法
   jev "状态描述" -q 问题名:问题内容      # 单次判断

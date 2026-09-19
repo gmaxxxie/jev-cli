@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # jev-cli 一键安装：CLI + 引导配置 API key
 #
-# 说明：pi 扩展（jev / jev_triage）已改为通过 pi 包分发，不再由本脚本
+# 说明：pi 扩展（jev）已改为通过 pi 包分发，不再由本脚本
 # 安装到全局 extensions 目录（避免与 pi 包重复注册导致工具名冲突）：
 #   pi install git:github.com/gmaxxxie/jev-cli
 #
