@@ -244,9 +244,28 @@ bash bootstrap/install-jev-stack.sh
 
 rc 文件按 `$SHELL` 选：macOS 默认 zsh，**不读 `~/.bashrc`**，写错文件会让 `typesafe_evaluate` 静默保持禁用。
 
-选项：`--no-key`（跳过 key，之后自己 `/typesafe login`）、`--no-agents`、`--no-bashrc`、`--dry-run`。
+选项：`--update`（刷新已装的）、`--no-key`（跳过 key，之后自己 `/typesafe login`）、`--no-agents`、`--no-bashrc`、`--dry-run`。
 
 **只有 API key 和 `jev-ultrafast/.env` 需要人工处理。** 其余全部来自公网（GitHub + npm），不需要从旧机器拷文件。脚本失败时返回非 0 退出码（`--check` 活验证不通过也会返回 1），可用于 CI / 自动化。
+
+### 升级已有旧版的设备
+
+两层，互相独立：
+
+```bash
+pi update --extensions                      # pi 包（npm 与 git 源都支持）
+curl -fsSL .../bootstrap/install-jev-stack.sh | bash -s -- --update   # bootstrap 管的部分
+```
+
+只跑 `pi update --extensions` 不够：它只更新包，**不会**补上 bootstrap 负责的那些东西。重跑
+bootstrap 才会装上前版没有的路由目标工具、并修好前版写错位置的配置。注意 `pi update` 不带参数
+时**只更新 pi 本身**，扩展要加 `--extensions`。
+
+`--update` 让脚本刷新已装的东西；不加时只装缺的，所以重复运行不会静默升级你的包。
+
+有一处会自动修复：旧版把 rc 文件写死 `~/.bashrc`，在 zsh 机器上那个 `PI_TYPESAFE_*` 块落在 zsh
+根本不读的文件里，`typesafe_evaluate` 一直静默禁用。升级时脚本会把那个块注释掉（注明原因、留备份），
+再写到正确的 rc 文件。没有这步的话，两个文件都会说"已有块"，结果谁都不修。
 
 安装后需要：新开终端（让环境变量生效）+ 重启 pi。验证：
 
@@ -278,9 +297,33 @@ The script is **idempotent** (safe to re-run; it will not append duplicate confi
 
 The rc file is chosen from `$SHELL`: macOS defaults to zsh and never reads `~/.bashrc`, so writing the caps there would silently leave `typesafe_evaluate` disabled.
 
-Flags: `--no-key` (skip key entry, use `/typesafe login` later), `--no-agents`, `--no-bashrc`, `--dry-run`.
+Flags: `--update` (refresh what is already installed), `--no-key` (skip key entry, use `/typesafe login` later), `--no-agents`, `--no-bashrc`, `--dry-run`.
 
 **Only the API key and `jev-ultrafast/.env` need manual handling.** Everything else comes from the public internet (GitHub + npm) — no need to copy files off the old machine. The script exits non-zero on failure (including a failing `--check` live verification), so it is safe to use in CI / automation.
+
+### Updating a device that already has an older version
+
+Two layers, and they are independent:
+
+```bash
+pi update --extensions                      # pi packages (both npm + git sources)
+curl -fsSL .../bootstrap/install-jev-stack.sh | bash -s -- --update   # bootstrap-managed bits
+```
+
+`pi update --extensions` alone refreshes the packages but **not** the things the bootstrap owns, so
+it is not enough to move an old device to the current version. Re-running the bootstrap picks up
+what the old version never installed (the `jev_route` target tools) and repairs the config it wrote
+to the wrong place. Note `pi update` with no flags updates **pi itself only** — extensions need
+`--extensions`.
+
+`--update` makes the bootstrap refresh what is already present; without it the script only installs
+what is missing, so a re-run never silently upgrades your packages.
+
+One repair is automatic: versions before this one hardcoded `~/.bashrc`, so on a zsh machine the
+`PI_TYPESAFE_*` block landed in a file zsh never reads and `typesafe_evaluate` stayed silently
+disabled. On upgrade the bootstrap comments that block out (labelled with the reason, backed up)
+and writes the real one to the correct rc file. Without this, both files would report "block already
+present" and neither would be fixed.
 
 Afterwards: open a new terminal (so the env vars apply) and restart pi. Verify with:
 

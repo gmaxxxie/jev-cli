@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
 # =============================================================================
-# install-jev-stack.sh — 在一台新设备上装好整套 Jev 栈（幂等，可重复运行）
+# install-jev-stack.sh — 在一台设备上装好/升级整套 Jev 栈（幂等，可重复运行）
 #
 # 装什么（全部来自公网，无需从旧机器拷文件）：
 #   1. pi 包 npm:pi-typesafe        → typesafe_evaluate 工具（官方直连批量判断）
 #   2. pi 包 git:…/jev-cli          → jev / jev_triage / jev_route 三个工具
-#   3. ~/.local/bin/jev 软链        → 指向 jev-cli 仓库 bin/jev（单一事实源）
-#   4. ~/.bashrc 环境变量块         → PI_TYPESAFE_ENABLED=1 + 每日花费硬闸门
-#   5. ~/.pi/agent/AGENTS.md 分工段 → 告诉 agent 什么场景用哪条通道
-#   6. 网关默认值                   → jev-gateway.json = official
+#   3. 路由目标工具                → pi-web-access / agent-browser / jev-ultrafast
+#   4. ~/.local/bin/jev 软链        → 指向 jev-cli 仓库 bin/jev（单一事实源）
+#   5. shell rc 环境变量块         → PI_TYPESAFE_ENABLED=1 + 每日花费硬闸门
+#   6. ~/.pi/agent/AGENTS.md 分工段 → 告诉 agent 什么场景用哪条通道
+#   7. 网关默认值                   → jev-gateway.json = official
 #
-# 需要手动做的只有一件事：API key（脚本会提示输入，不会写进命令历史）。
+# 需要手动做的只有两件：API key，以及 jev-ultrafast 的 .env。
 #
 # 用法：
 #   curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash
 #   # 或在仓库里：
 #   bash bootstrap/install-jev-stack.sh
 #
+# 升级已装的旧版（拉最新包 + 装上前版没有的路由工具 + 把错位置的 rc 块挑正）：
+#   curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash -s -- --update
+#
 # 选项：
+#   --update      已装的包也拉最新（默认不动已装的包，只装缺的）
 #   --no-key      跳过 key 交互（稍后自己 /typesafe login 或 export TYPESAFE_API_KEY）
 #   --no-agents   不写 ~/.pi/agent/AGENTS.md
-#   --no-bashrc   不写 ~/.bashrc 环境变量
+#   --no-bashrc   不写 shell rc 环境变量
 #   --dry-run     只打印将要做什么，不改任何东西
 #   -h, --help    帮助
 # =============================================================================
@@ -53,13 +58,14 @@ BASHRC="$RC_FILE"   # 兼容旧变量名
 BASHRC_MARKER="# ===== pi-typesafe: 默认启用 Jev 批量判断工具 ====="
 AGENTS_MARKER="## 判断 / 决策工具分工（Jev 双通道）"
 
-DO_KEY=1 DO_AGENTS=1 DO_BASHRC=1 DRY_RUN=0
+DO_KEY=1 DO_AGENTS=1 DO_BASHRC=1 DRY_RUN=0 DO_UPDATE=0
 for arg in "$@"; do
   case "$arg" in
     --no-key) DO_KEY=0 ;;
     --no-agents) DO_AGENTS=0 ;;
     --no-bashrc) DO_BASHRC=0 ;;   # 保留旧名，含义=不写 rc 文件
     --dry-run) DRY_RUN=1 ;;
+    --update) DO_UPDATE=1 ;;      # 已装的包也拉最新（升级旧设备用）
     -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知参数: ${arg}（-h 看帮助）" >&2; exit 2 ;;
   esac
@@ -109,19 +115,26 @@ step "2/8 安装 pi 包"
 installed_pkgs="$(pi list 2>/dev/null || true)"
 has_pkg() { grep -qF "$1" <<<"$installed_pkgs"; }
 
-if has_pkg "npm:pi-typesafe"; then
-  skip "npm:pi-typesafe 已安装"
-else
-  run pi install npm:pi-typesafe
-  ok "npm:pi-typesafe 已安装"
-fi
+# 已装则安装、已装且 --update 则拉最新。
+# 默认不动已装的包（重跑脚本不该静默升级），但会提示怎么升。
+install_or_update() {
+  local pkg="$1" label="${2:-$1}"
+  if ! has_pkg "$pkg"; then
+    run pi install "$pkg"
+    ok "$label 已安装"
+  elif [[ $DO_UPDATE == 1 ]]; then
+    if run pi update --extension "$pkg"; then
+      ok "$label 已更新到最新"
+    else
+      warn "$label 更新失败（可能是网络或版本冲突），继续"
+    fi
+  else
+    skip "$label 已安装（要升级加 --update）"
+  fi
+}
 
-if has_pkg "$REPO_GIT"; then
-  skip "$REPO_GIT 已安装"
-else
-  run pi install "$REPO_GIT"
-  ok "$REPO_GIT 已安装"
-fi
+install_or_update "npm:pi-typesafe" "npm:pi-typesafe"
+install_or_update "$REPO_GIT" "$REPO_GIT"
 
 # -----------------------------------------------------------------------------
 step "3/8 路由目标工具（jev_route 的清单）"
@@ -131,40 +144,48 @@ step "3/8 路由目标工具（jev_route 的清单）"
 # 扩展会自检并标注“未安装”，但装上才能真正用。
 
 # fetch_content / web_search → pi-web-access
-if has_pkg "npm:pi-web-access"; then
-  skip "npm:pi-web-access 已安装（fetch_content / web_search）"
-else
-  run pi install npm:pi-web-access
-  ok "npm:pi-web-access 已安装（fetch_content / web_search）"
-fi
+install_or_update "npm:pi-web-access" "npm:pi-web-access（fetch_content / web_search）"
 
 # agent-browser → 全局 npm 包
 if command -v agent-browser >/dev/null 2>&1; then
-  skip "agent-browser 已在 PATH"
-else
-  if command -v npm >/dev/null 2>&1; then
-    run npm install -g agent-browser
-    ok "agent-browser 已安装"
+  if [[ $DO_UPDATE == 1 ]] && command -v npm >/dev/null 2>&1; then
+    if run npm install -g agent-browser; then
+      ok "agent-browser 已更新到最新"
+    else
+      warn "agent-browser 更新失败，继续"
+    fi
   else
-    warn "没有 npm，跳过 agent-browser（需自行安装）"
+    skip "agent-browser 已在 PATH（要升级加 --update）"
   fi
+elif command -v npm >/dev/null 2>&1; then
+  run npm install -g agent-browser
+  ok "agent-browser 已安装"
+else
+  warn "没有 npm，跳过 agent-browser（需自行安装）"
 fi
 
 # jev-ultrafast → 公开 Python 项目（需 uv + .env 密钥）
 UF_DIR="${JEV_ULTRAFAST_DIR:-$HOME/Project/jev-ultrafast}"
 if [[ -f "$UF_DIR/pyproject.toml" ]]; then
-  skip "jev-ultrafast 已存在于 $UF_DIR"
-else
-  if command -v git >/dev/null 2>&1; then
-    if [[ $DRY_RUN == 1 ]]; then
-      printf '    %s[dry-run]%s 将 clone jev-ultrafast 到 %s\n' "$D" "$N" "$UF_DIR"
+  if [[ $DO_UPDATE == 1 && -d "$UF_DIR/.git" ]]; then
+    # 浅克隆（--depth 1）也能 pull，但需要跟踪分支信息
+    if run git -C "$UF_DIR" pull --ff-only --quiet; then
+      ok "jev-ultrafast 已更新"
     else
-      mkdir -p "$(dirname "$UF_DIR")"
-      if run git clone --depth 1 "$JEV_ULTRAFAST_GIT" "$UF_DIR"; then
-        ok "jev-ultrafast 已 clone 到 $UF_DIR"
-      else
-        warn "jev-ultrafast clone 失败（不影响其余功能）"
-      fi
+      warn "jev-ultrafast 更新失败（无跟踪分支或本地有改动），继续；可手动 cd $UF_DIR && git pull"
+    fi
+  else
+    skip "jev-ultrafast 已存在于 $UF_DIR（要升级加 --update）"
+  fi
+elif command -v git >/dev/null 2>&1; then
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '    %s[dry-run]%s 将 clone jev-ultrafast 到 %s\n' "$D" "$N" "$UF_DIR"
+  else
+    mkdir -p "$(dirname "$UF_DIR")"
+    if run git clone --depth 1 "$JEV_ULTRAFAST_GIT" "$UF_DIR"; then
+      ok "jev-ultrafast 已 clone 到 $UF_DIR"
+    else
+      warn "jev-ultrafast clone 失败（不影响其余功能）"
     fi
   fi
 fi
@@ -249,6 +270,46 @@ fi
 # -----------------------------------------------------------------------------
 step "6/8 $RC_KIND 环境变量（每日花费硬闸门）"
 # -----------------------------------------------------------------------------
+# 升级旧设备：旧版把 rc 文件写死 ~/.bashrc。若本机是 zsh，那个块永远不会被加载，
+# 而新脚本只会看自己的目标文件 —— 结果两边都“已有块”，谁都不写。
+# 先把错位置的旧块摘掉（注释掉，不删），再按正确位置重写。
+if [[ $DO_BASHRC == 1 && $RC_FILE != "$HOME/.bashrc" && -f "$HOME/.bashrc" ]] \
+   && grep -qxF "$BASHRC_MARKER" "$HOME/.bashrc"; then
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '    %s[dry-run]%s 将停用 ~/.bashrc 里错位置的 pi-typesafe 块（本机 shell 是 %s）\n' \
+      "$D" "$N" "$SHELL_NAME"
+  else
+    cp "$HOME/.bashrc" "$HOME/.bashrc.bak-$(date +%Y%m%d-%H%M%S)"
+    python3 - "$HOME/.bashrc" "$BASHRC_MARKER" "$RC_FILE" "$SHELL_NAME" <<'PY'
+import sys
+path, marker, target, shell = sys.argv[1:5]
+lines = open(path, encoding="utf-8").read().split("\n")
+out, i, n = [], 0, 0
+while i < len(lines):
+    if lines[i].strip() == marker:
+        # 块 = marker 起，到最后一个 PI_TYPESAFE_ export（中间夹杂注释行）
+        j = i + 1
+        while j < len(lines):
+            s = lines[j].strip()
+            if s == "" or s.startswith("#") or s.startswith("export PI_TYPESAFE_"):
+                j += 1
+            else:
+                break
+        out.append(f"# （已停用：位置错误，本机 shell 是 {shell}，应写在 {target}）")
+        for k in range(i + 1, j):
+            out.append(lines[k] if lines[k].lstrip().startswith("#") else "# " + lines[k])
+        n += j - i
+        i = j
+        continue
+    out.append(lines[i])
+    i += 1
+open(path, "w", encoding="utf-8").write("\n".join(out))
+print(f"    已停用 {n} 行错位置的旧块")
+PY
+    ok "~/.bashrc 里错位置的旧块已停用（备份见 ~/.bashrc.bak-*）"
+  fi
+fi
+# -----------------------------------------------------------------------------
 # 必须放在 interactive guard 之前：否则无头 pi / 子 agent 拿不到这些变量，
 # typesafe_evaluate 会静默退回“需会话内手动 enable”。
 BASHRC_BLOCK="$(cat <<'EOF'
@@ -288,7 +349,8 @@ guard = re.compile(
     r')'
 )
 idx = next((i for i, l in enumerate(lines) if guard.match(l)), None)
-out = lines[:idx] + block.split("\n") + [""] + lines[idx:] if idx is not None else lines + ["", block]
+block_lines = block.split("\n")
+out = lines[:idx] + block_lines + [""] + lines[idx:] if idx is not None else lines + ["", *block_lines, ""]
 open(path, "w", encoding="utf-8").write("\n".join(out))
 print(f"    插入位置: 第 {idx + 1 if idx is not None else len(lines) + 2} 行"
       f"{'（interactive guard 之前）' if idx is not None else '（文件末尾）'}")
@@ -334,8 +396,7 @@ else
     run mkdir -p "$(dirname "$AGENTS_MD")"
     [[ -f "$AGENTS_MD" ]] && cp "$AGENTS_MD" "${AGENTS_MD}.bak-$(date +%Y%m%d-%H%M%S)"
     if [[ -f "$AGENTS_MD" && -s "$AGENTS_MD" ]]; then
-      printf '\n%s\n' "$AGENTS_BLOCK" >>"$AGENTS_MD"
-    else
+      printf '\n%s\n' "$AGENTS_BLOCK" >>"$AGENTS_MD"    else
       printf '%s\n' "$AGENTS_BLOCK" >"$AGENTS_MD"
     fi
     ok "$AGENTS_MD 已更新"
