@@ -4,7 +4,7 @@
 #
 # 装什么（全部来自公网，无需从旧机器拷文件）：
 #   1. pi 包 npm:pi-typesafe        → typesafe_evaluate 工具（官方直连批量判断）
-#   2. pi 包 git:…/jev-cli          → jev / jev_triage / jev_route 三个工具
+#   2. pi 包 git:…/jev-cli          → jev 工具
 #   3. 路由目标工具                → pi-web-access / agent-browser / jev-ultrafast
 #   4. ~/.local/bin/jev 软链        → 指向 jev-cli 仓库 bin/jev（单一事实源）
 #   5. shell rc 环境变量块         → PI_TYPESAFE_ENABLED=1 + 每日花费硬闸门
@@ -137,11 +137,10 @@ install_or_update "npm:pi-typesafe" "npm:pi-typesafe"
 install_or_update "$REPO_GIT" "$REPO_GIT"
 
 # -----------------------------------------------------------------------------
-step "3/8 路由目标工具（jev_route 的清单）"
+step "3/8 网页/信息工具"
 # -----------------------------------------------------------------------------
-# jev_route 的 TOOLS 清单是写死的（保证可复现），但清单里的工具来自另外三个
-# 独立安装源。不装的话，路由会推荐一个不存在的工具。
-# 扩展会自检并标注“未安装”，但装上才能真正用。
+# 这些工具来自三个独立安装源。jev_route 扩展已退役（清单现由 web-control-router
+# skill 维护），但工具本身仍要装，否则网页/浏览器手段会缺失。
 
 # fetch_content / web_search → pi-web-access
 install_or_update "npm:pi-web-access" "npm:pi-web-access（fetch_content / web_search）"
@@ -372,8 +371,6 @@ AGENTS_BLOCK="$(cat <<'EOF'
 |---|---|
 | 批量结构化判断：一次分类/评分/筛选多个对象（≤32 问） | `typesafe_evaluate`（走 `api.typesafe.ai`，官方直连，带花费上限） |
 | 单条状态做少量判断 | `typesafe_evaluate`（同上，避免多开一条链路） |
-| 「接下来做哪一项」多候选决策支持 | `jev_triage`（带规则层与优劣势，Jev 失败自动降级） |
-| 网页/信息手段路由 | `jev_route`（内置本机工具清单 + 确定性规则层） |
 | reflex / 本地脚本调用 | `~/.local/bin/jev` CLI（不要改成别的） |
 
 - 不要为同一件事同时调两个通道；`typesafe_evaluate` 是多问批量首选，`jev` 自由问答仅在需要非结构化探测时用。

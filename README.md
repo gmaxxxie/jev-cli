@@ -1,8 +1,6 @@
 # jev-cli
 
-> 中文版：[README.zh.md](README.zh.md)
-
-A CLI for the [TypeSafe Jev System One](https://typesafe.ai) decision model — defaulting to the **TypeSafe direct API** (`api.typesafe.ai`), with [OpenRouter Decisions](https://openrouter.ai/docs/features/decisions) as a switchable alternative — plus two pi extensions: `jev` (structured decisions) and `jev_triage` (multi-candidate decision support).
+A CLI for the [TypeSafe Jev System One](https://typesafe.ai) decision model — defaulting to the **TypeSafe direct API** (`api.typesafe.ai`), with [OpenRouter Decisions](https://openrouter.ai/docs/features/decisions) as a switchable alternative — plus a pi extension: `jev` (structured decisions).
 
 ## What it is
 
@@ -24,7 +22,7 @@ Typical uses: routing, classification, urgency gating, workflow gate decisions.
 
 ## Install
 
-Three things: the CLI script, the pi extensions (`jev` + `jev_triage`), and an API key.
+Two things: the CLI script (with its optional `jev` pi extension) and an API key.
 
 ### One-shot install
 
@@ -45,7 +43,7 @@ bash /tmp/jev-cli/install.sh
 pi install git:github.com/gmaxxxie/jev-cli
 ```
 
-The package registers both extensions (`jev`, `jev_triage`). No version ref = follow `main`; update anytime with:
+The package registers the `jev` extension. No version ref = follow `main`; update anytime with:
 
 ```bash
 pi update --extensions
@@ -151,7 +149,7 @@ If `-m` / `-e` / `$JEV_MODEL` / `~/.pi/agent/jev-config.json` overrides a gatewa
 
 Resolution order (high → low): CLI flag (`-g` / `-e` / `-m`) > env (`JEV_GATEWAY` / `JEV_ENDPOINT` / `JEV_MODEL`) > `~/.pi/agent/jev-gateway.json` > default `official`. The request body and response shape are identical on both paths; only `provider` and `usage.cost` are OpenRouter-only extras (the CLI estimates cost from input tokens when absent).
 
-Because `jev`, `jev_triage`, `jev_route`, `dual-gate/reflex`, and AutoWriteO's `jev_bridge` all shell out to this one CLI, switching the gateway once switches all of them.
+Because `jev`, `dual-gate/reflex`, and AutoWriteO's `jev_bridge` all shell out to this one CLI, switching the gateway once switches all of them.
 
 ## pi extensions
 
@@ -179,60 +177,16 @@ Config is stored in `~/.pi/agent/jev-config.json` (gateway / model / endpoint / 
 
 `/jev gateway [official|openrouter]` reads and writes the **same** `~/.pi/agent/jev-gateway.json` as `jev --use`, so the extension and the CLI cannot drift apart. Switching also drops any `model` / `endpoint` from `jev-config.json` that belonged to the other gateway (they would otherwise outrank the preset and cause a 400).
 
-### `jev_route` — web/information-tool routing
+### Retired extensions
 
-The routing inventory (`fetch_content` / `web_search` / `agent-browser` / `jev-ultrafast`) is
-**hardcoded on purpose** — the caller does not supply it, so routing stays reproducible when no
-human reviews the choice. The flip side: the inventory can drift from what the device actually has.
-
-So each entry is probed at call time and the missing ones are marked:
-
-```
-### 本机未安装（已从候选中剔除）
-- `fetch_content` — 装法: pi install npm:pi-web-access
-- `jev-ultrafast` — 装法: git clone https://github.com/browser-use/jev-ultrafast ~/dev/jev-ultrafast && uv sync
-```
-
-Missing tools are dropped from the Jev candidate list, and when the recommended pick is itself
-unavailable the output carries an explicit install hint rather than a recommendation that would
-fail on use. `details.available` / `details.missing_tools` expose the same data to callers.
-
-`jev-ultrafast` has no fixed install path (bootstrap uses `~/Project`, people clone to `~/dev`, …),
-so it is resolved by three clues in reliability order — the first one that yields a real repo wins:
-
-1. **`jev-uf` on PATH** — read the repo path out of the wrapper script itself (follow symlinks, then
-   match `REPO=`). The wrapper is the single source of truth for where the tool lives, so a probe
-   that follows it cannot go stale when the directory is renamed or moved.
-2. **`JEV_ULTRAFAST_DIR`** — same override the bootstrap script honours.
-3. **Default locations** — `~/Project/jev-ultrafast`, then `~/dev/jev-ultrafast`.
-
-Each candidate must contain `pyproject.toml` (same marker the bootstrap uses). The report prints
-which clue fired (`_探针: jev-ultrafast 识别于 jev-uf → /path_`) and `details.ultrafast_dir` /
-`details.ultrafast_detected_via` carry it for callers — a wrong guess is then visible instead of
-silently dropping a tool that is actually installed.
-
-### `jev_triage` — multi-candidate decision support
-
-When pi replies with a multi-choice decision moment like "📋 待办（文档已记录）…需要我继续做哪一项吗?", pi calls `jev_triage`:
-
-```jsonc
-// tool exposed to the LLM inside pi
-jev_triage(context: "Jev 集成 v1.3 已落地，剩余三项收尾待办",
-           candidates: ["回放 E1 一致性", "E1 对接 audit_chain", "接线 autowrite CLI"])
-```
-
-It outputs a decision-support report:
-
-1. **Candidate comparison (rule-based signals)** — extracts dependencies/cost/status from candidate text
-2. **Jev score ranking** — one `score` per candidate (mapped to 0-10 + confidence)
-3. **Recommended pick** — Jev `choice` selects the best one
-4. **Top-3 pros/cons** — `noul` judgments of advantage/risk per candidate (P values)
-
-On Jev failure/timeout it falls back to the rule-based comparison — never blocks. Consider adding a line to your `AGENTS.md` so pi calls it proactively at decision moments.
+`jev_route` (web/information-tool routing) and `jev_triage` (multi-candidate decision support)
+were removed in 2026-09. Web/information routing now lives in the `web-control-router` skill;
+multi-candidate decisions are a plain `choice` question on the `jev` tool. Both are recoverable
+from git history.
 
 ## 安装到新设备（整套 Jev 栈）
 
-在一台新机器上复现本机的完整 Jev 环境（`typesafe_evaluate` + `jev` + `jev_triage` + `jev_route` + 每日花费闸门 + agent 分工文档）：
+在一台新机器上复现本机的完整 Jev 环境（`typesafe_evaluate` + `jev` + 每日花费闸门 + agent 分工文档）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash
@@ -248,7 +202,7 @@ bash bootstrap/install-jev-stack.sh
 
 1. 预检 `python3` / `pi` / `git`
 2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli`（已装则跳过）
-3. 安装 `jev_route` 路由清单里那四个工具：`npm:pi-web-access`（`fetch_content` / `web_search`）、`npm i -g agent-browser`、以及 `git clone` + `uv sync` 的 `jev-ultrafast`
+3. 安装网页/信息工具：`npm:pi-web-access`（`fetch_content` / `web_search`）、`npm i -g agent-browser`、以及 `git clone` + `uv sync` 的 `jev-ultrafast`
 4. 定位仓库并建 `~/.local/bin/jev` 软链（复用 `install.sh`，网络安装时自动 `git clone` 到 `~/.local/share/jev-cli`）
 5. 写 `~/.pi/agent/jev-gateway.json` → `official`
 6. 把 `PI_TYPESAFE_ENABLED=1` + 三个每日上限插进 `~/.zshrc` / `~/.bashrc` / `~/.profile` 的 **interactive guard 之前**（否则无头 pi / 子 agent 拿不到）
@@ -289,7 +243,7 @@ jev --status --check      # 网关 + key 活验证
 
 ## Installing on a new device (full stack)
 
-To reproduce the complete Jev environment (`typesafe_evaluate` + `jev` + `jev_triage` + `jev_route` + daily spend caps + the agent-facing routing doc) on another machine:
+To reproduce the complete Jev environment (`typesafe_evaluate` + `jev` + daily spend caps + the agent-facing routing doc) on another machine:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash
@@ -301,7 +255,7 @@ The script is **idempotent** (safe to re-run; it will not append duplicate confi
 
 1. Preflight `python3` / `pi` / `git`
 2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli` (skipped if present)
-3. Install the tools that `jev_route` routes to: `npm:pi-web-access` (`fetch_content` / `web_search`), `npm install -g agent-browser`, and `git clone` + `uv sync` of `jev-ultrafast`
+3. Install the web/information tools: `npm:pi-web-access` (`fetch_content` / `web_search`), `npm install -g agent-browser`, and `git clone` + `uv sync` of `jev-ultrafast`
 4. Locate the repo and symlink `~/.local/bin/jev` (reuses `install.sh`; falls back to `git clone` into `~/.local/share/jev-cli` for the network install)
 5. Write `~/.pi/agent/jev-gateway.json` → `official`
 6. Insert `PI_TYPESAFE_ENABLED=1` + the three daily caps into `~/.zshrc` / `~/.bashrc` / `~/.profile` **before the interactive guard** (otherwise headless pi / sub-agents never see them)
@@ -325,7 +279,7 @@ curl -fsSL .../bootstrap/install-jev-stack.sh | bash -s -- --update   # bootstra
 
 `pi update --extensions` alone refreshes the packages but **not** the things the bootstrap owns, so
 it is not enough to move an old device to the current version. Re-running the bootstrap picks up
-what the old version never installed (the `jev_route` target tools) and repairs the config it wrote
+what the old version never installed (the web/information tool set) and repairs the config it wrote
 to the wrong place. Note `pi update` with no flags updates **pi itself only** — extensions need
 `--extensions`.
 
@@ -351,15 +305,12 @@ jev --status --check      # gateway + live key check
 jev-cli/
 ├── bin/                jev CLI script (single-file Python)
 ├── extension/          pi extensions
-│   ├── jev.ts          structured decision tool
-│   ├── jev-route.ts    web/information-tool routing tool
-│   └── jev-triage.ts   multi-candidate decision support tool
+│   └── jev.ts          structured decision tool
 ├── bootstrap/
 │   └── install-jev-stack.sh   full-stack installer for a new device
 ├── install.sh          one-shot installer (INSTALL_CLI switch; CLI + API key guide)
 ├── package.json        pi package manifest (git source)
-├── README.md           (English)
-└── README.zh.md        (中文版)
+└── README.md           (English)
 ```
 
 ## License
