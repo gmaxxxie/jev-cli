@@ -29,15 +29,16 @@ jev — TypeSafe Jev System One 决策模型 CLI（走 OpenRouter Decisions API�
   # 从文件读 state
   jev @state.txt -q ok:一切正常吗?
 
-API 网关（OpenRouter / TypeSafe 官方直连，可手动切换）：
+API 网关（TypeSafe 官方直连 / OpenRouter，可手动切换）：
   两条通道模型与价格相同（$0.042/1M input，output 免费），只是网关不同。
+  默认走官方直连；需要 OpenRouter 时手动切。
 
     jev --status              # 看当前走哪个网关
-    jev --use official        # 切到 TypeSafe 官方直连（api.typesafe.ai）
-    jev --use openrouter      # 切回 OpenRouter
+    jev --use openrouter      # 切到 OpenRouter（经 OpenRouter 转发）
+    jev --use official        # 切回 TypeSafe 官方直连（api.typesafe.ai）
 
-  优先级（高 → 低）：命令行 flag > 环境变量 > ~/.pi/agent/jev-gateway.json > 默认 openrouter
-    -g/--gateway  JEV_GATEWAY     显式指定本次调用的网关
+  优先级（高 → 低）：命令行 flag > 环境变量 > ~/.pi/agent/jev-gateway.json > 默认 official
+    -g/--gateway  JEV_GATEWAY     显式指定本次调用的网关（official | openrouter）
     -e/--endpoint JEV_ENDPOINT    显式指定端点
     -m/--model    JEV_MODEL       显式指定模型
 
@@ -66,7 +67,7 @@ GATEWAY_PRESETS = {
         "label": "TypeSafe 官方直连",
     },
 }
-DEFAULT_GATEWAY = "openrouter"
+DEFAULT_GATEWAY = "official"
 
 # 兼容旧名：默认网关的端点/模型
 DEFAULT_ENDPOINT = GATEWAY_PRESETS[DEFAULT_GATEWAY]["endpoint"]
@@ -266,7 +267,7 @@ def main():
                     help="模型 ID（默认随网关：openrouter=typesafe/jev-1.13，official=jev-latest）")
     ap.add_argument("-e", "--endpoint", default=None, help="端点（默认随网关）")
     ap.add_argument("-g", "--gateway", default=None,
-                    help=f"网关：{' | '.join(GATEWAY_PRESETS)}（默认读 {GATEWAY_CONFIG}，否则 {DEFAULT_GATEWAY}）")
+                    help=f"网关：{' | '.join(GATEWAY_PRESETS)}（默认 official；读 {GATEWAY_CONFIG} 或 JEV_GATEWAY）")
     ap.add_argument("--key", help="API key（默认按网关自动解析）")
     ap.add_argument("--use", metavar="GATEWAY",
                     help=f"切换默认网关并持久化到 {GATEWAY_CONFIG}，然后退出")
