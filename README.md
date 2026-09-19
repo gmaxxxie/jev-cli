@@ -53,7 +53,7 @@ pi update --extensions
 
 To pin a specific release instead, append a tag: `pi install git:github.com/gmaxxxie/jev-cli@v1.0.0`.
 
-### Manual install
+### 手动安装
 
 ```bash
 # 1. CLI script — symlink when installing from a local clone so there is one source of truth
@@ -198,6 +198,72 @@ It outputs a decision-support report:
 
 On Jev failure/timeout it falls back to the rule-based comparison — never blocks. Consider adding a line to your `AGENTS.md` so pi calls it proactively at decision moments.
 
+## 安装到新设备（整套 Jev 栈）
+
+在一台新机器上复现本机的完整 Jev 环境（`typesafe_evaluate` + `jev` + `jev_triage` + `jev_route` + 每日花费闸门 + agent 分工文档）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash
+```
+
+或在仓库里跑：
+
+```bash
+bash bootstrap/install-jev-stack.sh
+```
+
+脚本是**幂等**的（可重复运行，不会重复追加配置），会做七件事：
+
+1. 预检 `python3` / `pi` / `git`
+2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli`（已装则跳过）
+3. 定位仓库并建 `~/.local/bin/jev` 软链（复用 `install.sh`，网络安装时自动 `git clone` 到 `~/.local/share/jev-cli`）
+4. 写 `~/.pi/agent/jev-gateway.json` → `official`
+5. 把 `PI_TYPESAFE_ENABLED=1` + 三个每日上限插进 `~/.bashrc` 的 **interactive guard 之前**（否则无头 pi / 子 agent 拿不到）
+6. 把「Jev 双通道分工」段写进 `~/.pi/agent/AGENTS.md`
+7. 交互式提示输入 API key（**不回显、不进 shell 历史**），然后用一次免费 `GET /v1/models` 做活验证
+
+选项：`--no-key`（跳过 key，之后自己 `/typesafe login`）、`--no-agents`、`--no-bashrc`、`--dry-run`。
+
+**只有 API key 需要人工处理。** 其余全部来自公网（GitHub + npm），不需要从旧机器拷文件。脚本失败时返回非 0 退出码（`--check` 活验证不通过也会返回 1），可用于 CI / 自动化。
+
+安装后需要：新开终端（让环境变量生效）+ 重启 pi。验证：
+
+```bash
+jev --status --check      # 网关 + key 活验证
+/jev gateway              # pi 内查看当前网关
+```
+
+## Installing on a new device (full stack)
+
+To reproduce the complete Jev environment (`typesafe_evaluate` + `jev` + `jev_triage` + `jev_route` + daily spend caps + the agent-facing routing doc) on another machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/install-jev-stack.sh | bash
+```
+
+Or from a clone: `bash bootstrap/install-jev-stack.sh`.
+
+The script is **idempotent** (safe to re-run; it will not append duplicate config) and performs seven steps:
+
+1. Preflight `python3` / `pi` / `git`
+2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli` (skipped if present)
+3. Locate the repo and symlink `~/.local/bin/jev` (reuses `install.sh`; falls back to `git clone` into `~/.local/share/jev-cli` for the network install)
+4. Write `~/.pi/agent/jev-gateway.json` → `official`
+5. Insert `PI_TYPESAFE_ENABLED=1` + the three daily caps into `~/.bashrc` **before the interactive guard** (otherwise headless pi / sub-agents never see them)
+6. Add the "Jev dual-channel routing" section to `~/.pi/agent/AGENTS.md`
+7. Prompt for the API key (no echo, never in shell history), then live-verify it with one free `GET /v1/models`
+
+Flags: `--no-key` (skip key entry, use `/typesafe login` later), `--no-agents`, `--no-bashrc`, `--dry-run`.
+
+**Only the API key needs manual handling.** Everything else comes from the public internet (GitHub + npm) — no need to copy files off the old machine. The script exits non-zero on failure (including a failing `--check` live verification), so it is safe to use in CI / automation.
+
+Afterwards: open a new terminal (so the env vars apply) and restart pi. Verify with:
+
+```bash
+jev --status --check      # gateway + live key check
+/jev gateway              # show current gateway inside pi
+```
+
 ## Repository layout
 
 ```
@@ -205,7 +271,10 @@ jev-cli/
 ├── bin/                jev CLI script (single-file Python)
 ├── extension/          pi extensions
 │   ├── jev.ts          structured decision tool
+│   ├── jev-route.ts    web/information-tool routing tool
 │   └── jev-triage.ts   multi-candidate decision support tool
+├── bootstrap/
+│   └── install-jev-stack.sh   full-stack installer for a new device
 ├── install.sh          one-shot installer (INSTALL_CLI switch; CLI + API key guide)
 ├── package.json        pi package manifest (git source)
 ├── README.md           (English)

@@ -309,21 +309,22 @@ def probe(gateway):
 
 
 def _describe(gateway, check=False):
+    """返回 (文本, 是否通过)。check 模式下 key 无效算不通过（供脚本判定退出码）。"""
     p = GATEWAY_PRESETS[gateway]
     lines = [f"网关:   {gateway}  ({p['label']})",
              f"端点:   {resolve_endpoint(None, gateway)}",
              f"模型:   {resolve_model(None, gateway)}"]
     if not _key_available(gateway):
         lines.append("key:    缺失（文件/环境变量里都没有）")
-        return "\n".join(lines)
+        return "\n".join(lines), not check
     if not check:
         lines.append("key:    已就绪（仅检查是否存在；--check 可做活验证）")
-        return "\n".join(lines)
+        return "\n".join(lines), True
     ok, detail, names = probe(gateway)
     lines.append(f"key:    {'✓ ' if ok else '✗ '}{detail}")
     if names:
         lines.append("可用模型: " + ", ".join(names))
-    return "\n".join(lines)
+    return "\n".join(lines), ok
 
 
 def do_switch(gateway):
@@ -366,12 +367,16 @@ def do_status(check=False):
         print(f"扩展配置: {JEV_CONFIG} → model={cfg_model}  ← 会以 -m 压过网关预设")
     print()
     gateway = resolve_gateway(None)
-    print(_describe(gateway, check=check))
+    text, passed = _describe(gateway, check=check)
+    print(text)
+    conflict_here = False
     if cfg_model:
         conflict = model_gateway_conflict(cfg_model, gateway)
         if conflict:
             print(f"\n⚠ 冲突：{conflict}")
-    return 0
+            conflict_here = True
+    # 退出码：--check 未通过、或模型与网关冲突 → 非 0，方便脚本/CI 判定
+    return 0 if (passed and not conflict_here) else 1
 
 
 def main():
