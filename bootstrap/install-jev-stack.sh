@@ -34,8 +34,20 @@ TYPESAFE_AUTH="${HOME}/.pi/agent/pi-typesafe/auth.json"
 OPENROUTER_AUTH="${HOME}/.pi/agent/auth.json"
 GATEWAY_JSON="${HOME}/.pi/agent/jev-gateway.json"
 AGENTS_MD="${HOME}/.pi/agent/AGENTS.md"
-BASHRC="${HOME}/.bashrc"
 CLI_LINK="${HOME}/.local/bin/jev"
+
+# rc 文件按登录 shell 选：写错文件 = 环境变量永远不生效（macOS 默认 zsh，不读 .bashrc）
+# 用参数展开而非 basename，避免 PATH 里没有 coreutils 时挂掉
+_shell_path="${SHELL:-/bin/bash}"
+SHELL_NAME="${_shell_path##*/}"
+unset _shell_path
+case "$SHELL_NAME" in
+  zsh)  RC_FILE="${HOME}/.zshrc" ; RC_KIND="zshrc" ;;
+  bash) RC_FILE="${HOME}/.bashrc"; RC_KIND="bashrc" ;;
+  *)    RC_FILE="${HOME}/.profile"; RC_KIND="profile（未知 shell ${SHELL_NAME}）" ;;
+esac
+BASHRC="$RC_FILE"   # 兼容旧变量名
+# zsh 里 interactive guard 的写法与 bash 不同（默认无 guard，但常见 [[ -o interactive ]] / ZSH_EVAL_CONTEXT）
 
 BASHRC_MARKER="# ===== pi-typesafe: 默认启用 Jev 批量判断工具 ====="
 AGENTS_MARKER="## 判断 / 决策工具分工（Jev 双通道）"
@@ -45,7 +57,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-key) DO_KEY=0 ;;
     --no-agents) DO_AGENTS=0 ;;
-    --no-bashrc) DO_BASHRC=0 ;;
+    --no-bashrc) DO_BASHRC=0 ;;   # 保留旧名，含义=不写 rc 文件
     --dry-run) DRY_RUN=1 ;;
     -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知参数: $arg（-h 看帮助）" >&2; exit 2 ;;
@@ -70,12 +82,25 @@ printf '%s\n' "${B}整套 Jev 栈安装${N}  ${D}(pi-typesafe + jev-cli + CLI + 
 # -----------------------------------------------------------------------------
 step "1/7 预检依赖"
 # -----------------------------------------------------------------------------
-command -v python3 >/dev/null 2>&1 || die "缺少 python3（jev CLI 是 Python 脚本）"
-ok "python3 $(python3 -V 2>&1 | awk '{print $2}')"
+command -v python3 >/dev/null 2>&1 || {
+  warn "缺少 python3（jev CLI 是 Python 脚本）"
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) warn "macOS: brew install python3   或   xcode-select --install" ;;
+    Linux)  warn "装法: sudo apt install python3   或   sudo dnf install python3" ;;
+    *)      warn "请先安装 Python 3" ;;
+  esac
+  die "装完 python3 后重跑本脚本"
+}
+# 版本号用纯 shell 解析：精简 PATH 里可能没有 awk/head
+py_ver="$(python3 -V 2>&1)"
+ok "python3 ${py_ver#Python }"
 command -v pi >/dev/null 2>&1 || die "缺少 pi（先装 @earendil-works/pi-coding-agent）"
-ok "pi $(pi --version 2>/dev/null | head -1 || echo '(版本未知)')"
+pi_ver="$(pi --version 2>/dev/null || true)"
+ok "pi ${pi_ver%%$'\n'*}"
 command -v git >/dev/null 2>&1 || die "缺少 git（pi install git:… 需要）"
-ok "git $(git --version | awk '{print $3}')"
+git_ver="$(git --version 2>/dev/null || true)"
+ok "git ${git_ver##* }"
+ok "shell: $SHELL_NAME → rc 文件 $RC_FILE"
 
 # -----------------------------------------------------------------------------
 step "2/7 安装 pi 包"
@@ -131,9 +156,16 @@ elif [[ -e "$CLI_LINK" ]]; then
 else
   [[ $DRY_RUN == 1 ]] || die "软链未创建：$CLI_LINK"
 fi
+# Windows / WSL 提醒：原生 Windows 上 ~/.local/bin 不在 PATH，软链语义也不同
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    warn "检测到 Windows shell：~/.local/bin/jev 可能不在 PATH。"
+    warn "推荐在 WSL 里跑本脚本；原生 Windows 需手动把 %USERPROFILE%\\.local\\bin 加进 PATH。"
+    ;;
+esac
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ok "~/.local/bin 已在 PATH 中" ;;
-  *) warn "~/.local/bin 不在 PATH：请把 'export PATH=\"\$HOME/.local/bin:\$PATH\"' 加进 ~/.bashrc" ;;
+  *) warn "~/.local/bin 不在 PATH：请把 'export PATH=\"\$HOME/.local/bin:\$PATH\"' 加进 $RC_FILE" ;;
 esac
 
 # -----------------------------------------------------------------------------
@@ -150,7 +182,7 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-step "5/7 ~/.bashrc 环境变量（每日花费硬闸门）"
+step "5/7 $RC_KIND 环境变量（每日花费硬闸门）"
 # -----------------------------------------------------------------------------
 # 必须放在 interactive guard 之前：否则无头 pi / 子 agent 拿不到这些变量，
 # typesafe_evaluate 会静默退回“需会话内手动 enable”。
@@ -170,28 +202,34 @@ EOF
 
 if [[ $DO_BASHRC == 0 ]]; then
   skip "--no-bashrc，跳过"
-elif [[ -f "$BASHRC" ]] && grep -qF "$BASHRC_MARKER" "$BASHRC"; then
-  skip "$BASHRC 已有 pi-typesafe 块"
+elif [[ -f "$RC_FILE" ]] && grep -qF "$BASHRC_MARKER" "$RC_FILE"; then
+  skip "$RC_FILE 已有 pi-typesafe 块"
 else
   if [[ $DRY_RUN == 1 ]]; then
-    printf '    %s[dry-run]%s 将把环境变量块插入 %s 的 interactive guard 之前\n' "$D" "$N" "$BASHRC"
+    printf '    %s[dry-run]%s 将把环境变量块插入 %s 的 interactive guard 之前\n' "$D" "$N" "$RC_FILE"
   else
-    [[ -f "$BASHRC" ]] || : >"$BASHRC"
-    cp "$BASHRC" "${BASHRC}.bak-$(date +%Y%m%d-%H%M%S)"
-    python3 - "$BASHRC" "$BASHRC_BLOCK" <<'PY'
+    [[ -f "$RC_FILE" ]] || : >"$RC_FILE"
+    cp "$RC_FILE" "${RC_FILE}.bak-$(date +%Y%m%d-%H%M%S)"
+    python3 - "$RC_FILE" "$BASHRC_BLOCK" <<'PY'
 import re, sys
 path, block = sys.argv[1], sys.argv[2]
 lines = open(path, encoding="utf-8").read().split("\n")
 # interactive guard 的几种常见写法，插到第一个之前
-guard = re.compile(r'^\s*(case\s+\$-|\[\[\s*\$-\s*!=|\[\s*-z\s*"\$PS1"|\[\[\s*-z\s*"\$PS1")')
+guard = re.compile(
+    r'^\s*('
+    r'case\s+\$-|\[\[\s*\$-\s*!=|'
+    r'\[\[\s*-o\s+interactive|case\s+\$ZSH_EVAL_CONTEXT|'
+    r'\[\s*-z\s*"\$PS1"|\[\[\s*-z\s*"\$PS1"'
+    r')'
+)
 idx = next((i for i, l in enumerate(lines) if guard.match(l)), None)
 out = lines[:idx] + block.split("\n") + [""] + lines[idx:] if idx is not None else lines + ["", block]
 open(path, "w", encoding="utf-8").write("\n".join(out))
 print(f"    插入位置: 第 {idx + 1 if idx is not None else len(lines) + 2} 行"
       f"{'（interactive guard 之前）' if idx is not None else '（文件末尾）'}")
 PY
-    ok "$BASHRC 已更新（备份见 ${BASHRC}.bak-*）"
-    warn "当前 shell 未生效：新开终端，或 source ~/.bashrc"
+    ok "$RC_FILE 已更新（备份见 ${RC_FILE}.bak-*）"
+    warn "当前 shell 未生效：新开终端，或 source $RC_FILE"
   fi
 fi
 
@@ -360,7 +398,7 @@ fi
 cat <<EOF
 
 后续手动步骤
-  1. 新开一个终端（或 source ~/.bashrc）让 PI_TYPESAFE_* 生效
+  1. 新开一个终端（或 source $RC_FILE）让 PI_TYPESAFE_* 生效
   2. 重启 pi，然后确认：
        /jev gateway          # 当前网关
        jev --status --check  # 命令行活验证
