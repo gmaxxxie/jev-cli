@@ -61,7 +61,7 @@ for arg in "$@"; do
     --no-bashrc) DO_BASHRC=0 ;;   # 保留旧名，含义=不写 rc 文件
     --dry-run) DRY_RUN=1 ;;
     -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "未知参数: $arg（-h 看帮助）" >&2; exit 2 ;;
+    *) echo "未知参数: ${arg}（-h 看帮助）" >&2; exit 2 ;;
   esac
 done
 
@@ -208,7 +208,7 @@ fi
 ok "仓库: $REPO_DIR"
 
 for f in bin/jev extension/jev.ts extension/jev-triage.ts extension/jev-route.ts; do
-  [[ $DRY_RUN == 1 || -f "$REPO_DIR/$f" ]] || die "仓库缺少 $f（拉到的版本不对？）"
+  [[ $DRY_RUN == 1 || -f "$REPO_DIR/$f" ]] || die "仓库缺少 ${f}（拉到的版本不对？）"
 done
 ok "三个扩展 + CLI 脚本齐全"
 
@@ -379,7 +379,7 @@ with open(path, "w", encoding="utf-8") as f:
     f.write("\n")
 os.chmod(path, 0o600)
 PY
-      ok "官方 key 已写入 $TYPESAFE_AUTH（权限 600）"
+      ok "官方 key 已写入 ${TYPESAFE_AUTH}（权限 600）"
     fi
     unset ts_key
   else
@@ -474,7 +474,7 @@ fi
 cat <<EOF
 
 后续手动步骤
-  1. 新开一个终端（或 source $RC_FILE）让 PI_TYPESAFE_* 生效
+  1. 新开一个终端（或 source ${RC_FILE}）让 PI_TYPESAFE_* 生效
   2. 重启 pi，然后确认：
        /jev gateway          # 当前网关
        jev --status --check  # 命令行活验证
