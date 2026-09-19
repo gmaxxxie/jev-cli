@@ -179,6 +179,25 @@ Config is stored in `~/.pi/agent/jev-config.json` (gateway / model / endpoint / 
 
 `/jev gateway [official|openrouter]` reads and writes the **same** `~/.pi/agent/jev-gateway.json` as `jev --use`, so the extension and the CLI cannot drift apart. Switching also drops any `model` / `endpoint` from `jev-config.json` that belonged to the other gateway (they would otherwise outrank the preset and cause a 400).
 
+### `jev_route` — web/information-tool routing
+
+The routing inventory (`fetch_content` / `web_search` / `agent-browser` / `jev-ultrafast`) is
+**hardcoded on purpose** — the caller does not supply it, so routing stays reproducible when no
+human reviews the choice. The flip side: the inventory can drift from what the device actually has.
+
+So each entry is probed at call time and the missing ones are marked:
+
+```
+### 本机未安装（已从候选中剔除）
+- `fetch_content` — 装法: pi install npm:pi-web-access
+- `jev-ultrafast` — 装法: git clone https://github.com/browser-use/jev-ultrafast ~/Project/jev-ultrafast && uv sync
+```
+
+Missing tools are dropped from the Jev candidate list, and when the recommended pick is itself
+unavailable the output carries an explicit install hint rather than a recommendation that would
+fail on use. `details.available` / `details.missing_tools` expose the same data to callers.
+Probe override: `JEV_ULTRAFAST_DIR` (default `~/Project/jev-ultrafast`).
+
 ### `jev_triage` — multi-candidate decision support
 
 When pi replies with a multi-choice decision moment like "📋 待办（文档已记录）…需要我继续做哪一项吗?", pi calls `jev_triage`:
@@ -212,19 +231,22 @@ curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/ins
 bash bootstrap/install-jev-stack.sh
 ```
 
-脚本是**幂等**的（可重复运行，不会重复追加配置），会做七件事：
+脚本是**幂等**的（可重复运行，不会重复追加配置），会做八件事：
 
 1. 预检 `python3` / `pi` / `git`
 2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli`（已装则跳过）
-3. 定位仓库并建 `~/.local/bin/jev` 软链（复用 `install.sh`，网络安装时自动 `git clone` 到 `~/.local/share/jev-cli`）
-4. 写 `~/.pi/agent/jev-gateway.json` → `official`
-5. 把 `PI_TYPESAFE_ENABLED=1` + 三个每日上限插进 `~/.bashrc` 的 **interactive guard 之前**（否则无头 pi / 子 agent 拿不到）
-6. 把「Jev 双通道分工」段写进 `~/.pi/agent/AGENTS.md`
-7. 交互式提示输入 API key（**不回显、不进 shell 历史**），然后用一次免费 `GET /v1/models` 做活验证
+3. 安装 `jev_route` 路由清单里那四个工具：`npm:pi-web-access`（`fetch_content` / `web_search`）、`npm i -g agent-browser`、以及 `git clone` + `uv sync` 的 `jev-ultrafast`
+4. 定位仓库并建 `~/.local/bin/jev` 软链（复用 `install.sh`，网络安装时自动 `git clone` 到 `~/.local/share/jev-cli`）
+5. 写 `~/.pi/agent/jev-gateway.json` → `official`
+6. 把 `PI_TYPESAFE_ENABLED=1` + 三个每日上限插进 `~/.zshrc` / `~/.bashrc` / `~/.profile` 的 **interactive guard 之前**（否则无头 pi / 子 agent 拿不到）
+7. 把「Jev 双通道分工」段写进 `~/.pi/agent/AGENTS.md`
+8. 交互式提示输入 API key（**不回显、不进 shell 历史**），然后用一次免费 `GET /v1/models` 做活验证
+
+rc 文件按 `$SHELL` 选：macOS 默认 zsh，**不读 `~/.bashrc`**，写错文件会让 `typesafe_evaluate` 静默保持禁用。
 
 选项：`--no-key`（跳过 key，之后自己 `/typesafe login`）、`--no-agents`、`--no-bashrc`、`--dry-run`。
 
-**只有 API key 需要人工处理。** 其余全部来自公网（GitHub + npm），不需要从旧机器拷文件。脚本失败时返回非 0 退出码（`--check` 活验证不通过也会返回 1），可用于 CI / 自动化。
+**只有 API key 和 `jev-ultrafast/.env` 需要人工处理。** 其余全部来自公网（GitHub + npm），不需要从旧机器拷文件。脚本失败时返回非 0 退出码（`--check` 活验证不通过也会返回 1），可用于 CI / 自动化。
 
 安装后需要：新开终端（让环境变量生效）+ 重启 pi。验证：
 
@@ -243,19 +265,22 @@ curl -fsSL https://raw.githubusercontent.com/gmaxxxie/jev-cli/main/bootstrap/ins
 
 Or from a clone: `bash bootstrap/install-jev-stack.sh`.
 
-The script is **idempotent** (safe to re-run; it will not append duplicate config) and performs seven steps:
+The script is **idempotent** (safe to re-run; it will not append duplicate config) and performs eight steps:
 
 1. Preflight `python3` / `pi` / `git`
 2. `pi install npm:pi-typesafe` + `pi install git:github.com/gmaxxxie/jev-cli` (skipped if present)
-3. Locate the repo and symlink `~/.local/bin/jev` (reuses `install.sh`; falls back to `git clone` into `~/.local/share/jev-cli` for the network install)
-4. Write `~/.pi/agent/jev-gateway.json` → `official`
-5. Insert `PI_TYPESAFE_ENABLED=1` + the three daily caps into `~/.bashrc` **before the interactive guard** (otherwise headless pi / sub-agents never see them)
-6. Add the "Jev dual-channel routing" section to `~/.pi/agent/AGENTS.md`
-7. Prompt for the API key (no echo, never in shell history), then live-verify it with one free `GET /v1/models`
+3. Install the tools that `jev_route` routes to: `npm:pi-web-access` (`fetch_content` / `web_search`), `npm install -g agent-browser`, and `git clone` + `uv sync` of `jev-ultrafast`
+4. Locate the repo and symlink `~/.local/bin/jev` (reuses `install.sh`; falls back to `git clone` into `~/.local/share/jev-cli` for the network install)
+5. Write `~/.pi/agent/jev-gateway.json` → `official`
+6. Insert `PI_TYPESAFE_ENABLED=1` + the three daily caps into `~/.zshrc` / `~/.bashrc` / `~/.profile` **before the interactive guard** (otherwise headless pi / sub-agents never see them)
+7. Add the "Jev dual-channel routing" section to `~/.pi/agent/AGENTS.md`
+8. Prompt for the API key (no echo, never in shell history), then live-verify it with one free `GET /v1/models`
+
+The rc file is chosen from `$SHELL`: macOS defaults to zsh and never reads `~/.bashrc`, so writing the caps there would silently leave `typesafe_evaluate` disabled.
 
 Flags: `--no-key` (skip key entry, use `/typesafe login` later), `--no-agents`, `--no-bashrc`, `--dry-run`.
 
-**Only the API key needs manual handling.** Everything else comes from the public internet (GitHub + npm) — no need to copy files off the old machine. The script exits non-zero on failure (including a failing `--check` live verification), so it is safe to use in CI / automation.
+**Only the API key and `jev-ultrafast/.env` need manual handling.** Everything else comes from the public internet (GitHub + npm) — no need to copy files off the old machine. The script exits non-zero on failure (including a failing `--check` live verification), so it is safe to use in CI / automation.
 
 Afterwards: open a new terminal (so the env vars apply) and restart pi. Verify with:
 

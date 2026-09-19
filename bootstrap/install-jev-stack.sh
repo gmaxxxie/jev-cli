@@ -28,6 +28,7 @@ set -euo pipefail
 
 REPO_SLUG="gmaxxxie/jev-cli"
 REPO_GIT="git:github.com/${REPO_SLUG}"
+JEV_ULTRAFAST_GIT="https://github.com/browser-use/jev-ultrafast.git"
 REPO_URL="https://github.com/${REPO_SLUG}"
 EXPECTED_REPO_DIR="${HOME}/.pi/agent/git/github.com/${REPO_SLUG}"
 TYPESAFE_AUTH="${HOME}/.pi/agent/pi-typesafe/auth.json"
@@ -80,7 +81,7 @@ printf '%s\n' "${B}整套 Jev 栈安装${N}  ${D}(pi-typesafe + jev-cli + CLI + 
 [[ $DRY_RUN == 1 ]] && warn "dry-run 模式：只打印，不落盘"
 
 # -----------------------------------------------------------------------------
-step "1/7 预检依赖"
+step "1/8 预检依赖"
 # -----------------------------------------------------------------------------
 command -v python3 >/dev/null 2>&1 || {
   warn "缺少 python3（jev CLI 是 Python 脚本）"
@@ -103,7 +104,7 @@ ok "git ${git_ver##* }"
 ok "shell: $SHELL_NAME → rc 文件 $RC_FILE"
 
 # -----------------------------------------------------------------------------
-step "2/7 安装 pi 包"
+step "2/8 安装 pi 包"
 # -----------------------------------------------------------------------------
 installed_pkgs="$(pi list 2>/dev/null || true)"
 has_pkg() { grep -qF "$1" <<<"$installed_pkgs"; }
@@ -123,7 +124,71 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-step "3/7 定位仓库并建 CLI 软链"
+step "3/8 路由目标工具（jev_route 的清单）"
+# -----------------------------------------------------------------------------
+# jev_route 的 TOOLS 清单是写死的（保证可复现），但清单里的工具来自另外三个
+# 独立安装源。不装的话，路由会推荐一个不存在的工具。
+# 扩展会自检并标注“未安装”，但装上才能真正用。
+
+# fetch_content / web_search → pi-web-access
+if has_pkg "npm:pi-web-access"; then
+  skip "npm:pi-web-access 已安装（fetch_content / web_search）"
+else
+  run pi install npm:pi-web-access
+  ok "npm:pi-web-access 已安装（fetch_content / web_search）"
+fi
+
+# agent-browser → 全局 npm 包
+if command -v agent-browser >/dev/null 2>&1; then
+  skip "agent-browser 已在 PATH"
+else
+  if command -v npm >/dev/null 2>&1; then
+    run npm install -g agent-browser
+    ok "agent-browser 已安装"
+  else
+    warn "没有 npm，跳过 agent-browser（需自行安装）"
+  fi
+fi
+
+# jev-ultrafast → 公开 Python 项目（需 uv + .env 密钥）
+UF_DIR="${JEV_ULTRAFAST_DIR:-$HOME/Project/jev-ultrafast}"
+if [[ -f "$UF_DIR/pyproject.toml" ]]; then
+  skip "jev-ultrafast 已存在于 $UF_DIR"
+else
+  if command -v git >/dev/null 2>&1; then
+    if [[ $DRY_RUN == 1 ]]; then
+      printf '    %s[dry-run]%s 将 clone jev-ultrafast 到 %s\n' "$D" "$N" "$UF_DIR"
+    else
+      mkdir -p "$(dirname "$UF_DIR")"
+      if run git clone --depth 1 "$JEV_ULTRAFAST_GIT" "$UF_DIR"; then
+        ok "jev-ultrafast 已 clone 到 $UF_DIR"
+      else
+        warn "jev-ultrafast clone 失败（不影响其余功能）"
+      fi
+    fi
+  fi
+fi
+
+if [[ -f "$UF_DIR/pyproject.toml" ]]; then
+  if [[ -d "$UF_DIR/.venv" ]]; then
+    skip "jev-ultrafast 依赖已同步（$UF_DIR/.venv）"
+  elif ! command -v uv >/dev/null 2>&1; then
+    warn "没有 uv，跳过 jev-ultrafast 依赖安装（需自行 uv sync）"
+  elif [[ $DRY_RUN == 1 ]]; then
+    printf '    %s[dry-run]%s 将在 %s 执行 uv sync\n' "$D" "$N" "$UF_DIR"
+  elif run bash -c "cd '$UF_DIR' && uv sync"; then
+    ok "jev-ultrafast 依赖已同步"
+  else
+    warn "uv sync 失败，请手动在 $UF_DIR 跑 uv sync"
+  fi
+  # .env 密钥只能人工填：密钥不该由脚本生成或代写
+  if [[ ! -f "$UF_DIR/.env" ]]; then
+    warn "jev-ultrafast 需要 $UF_DIR/.env（TYPESAFE_API_KEY / TEXT_MODEL_* 等），请自行填写"
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+step "4/8 定位仓库并建 CLI 软链"
 # -----------------------------------------------------------------------------
 REPO_DIR=""
 if [[ -f "$EXPECTED_REPO_DIR/bin/jev" ]]; then
@@ -169,7 +234,7 @@ case ":$PATH:" in
 esac
 
 # -----------------------------------------------------------------------------
-step "4/7 网关默认值"
+step "5/8 网关默认值"
 # -----------------------------------------------------------------------------
 if [[ -f "$GATEWAY_JSON" ]]; then
   skip "$GATEWAY_JSON 已存在 → $(cat "$GATEWAY_JSON")"
@@ -182,7 +247,7 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-step "5/7 $RC_KIND 环境变量（每日花费硬闸门）"
+step "6/8 $RC_KIND 环境变量（每日花费硬闸门）"
 # -----------------------------------------------------------------------------
 # 必须放在 interactive guard 之前：否则无头 pi / 子 agent 拿不到这些变量，
 # typesafe_evaluate 会静默退回“需会话内手动 enable”。
@@ -234,7 +299,7 @@ PY
 fi
 
 # -----------------------------------------------------------------------------
-step "6/7 ~/.pi/agent/AGENTS.md 分工段"
+step "7/8 ~/.pi/agent/AGENTS.md 分工段"
 # -----------------------------------------------------------------------------
 AGENTS_BLOCK="$(cat <<'EOF'
 ## 判断 / 决策工具分工（Jev 双通道）
@@ -278,7 +343,7 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-step "7/7 API key"
+step "8/8 API key"
 # -----------------------------------------------------------------------------
 key_present() { [[ -n "${TYPESAFE_API_KEY:-}" ]] || { [[ -f "$TYPESAFE_AUTH" ]] && grep -q '"apiKey"' "$TYPESAFE_AUTH"; }; }
 
@@ -363,9 +428,20 @@ fi
 
 fail=0
 printf '    pi 包:\n'
-for p in "npm:pi-typesafe" "$REPO_GIT"; do
+for p in "npm:pi-typesafe" "$REPO_GIT" "npm:pi-web-access"; do
   if pi list 2>/dev/null | grep -qF "$p"; then printf '      %s✓%s %s\n' "$G" "$N" "$p"; else printf '      %s✗%s %s\n' "$R" "$N" "$p"; fail=1; fi
 done
+
+printf '    jev_route 目标工具:\n'
+for c in agent-browser; do
+  if command -v "$c" >/dev/null 2>&1; then printf '      %s✓%s %s\n' "$G" "$N" "$c"; else printf '      %s✗%s %s（jev_route 会推荐但不可用）\n' "$Y" "$N" "$c"; fi
+done
+if [[ -f "$UF_DIR/pyproject.toml" ]]; then
+  printf '      %s✓%s jev-ultrafast (%s)\n' "$G" "$N" "$UF_DIR"
+  [[ -f "$UF_DIR/.env" ]] || printf '      %s!%s jev-ultrafast 缺 .env（需填密钥）\n' "$Y" "$N"
+else
+  printf '      %s!%s jev-ultrafast 未安装（jev_route 会推荐但不可用）\n' "$Y" "$N"
+fi
 
 if [[ -x "$CLI_LINK" ]]; then
   printf '      %s✓%s %s\n' "$G" "$N" "$CLI_LINK → $(readlink "$CLI_LINK" 2>/dev/null || echo '(普通文件)')"
@@ -403,6 +479,11 @@ cat <<EOF
        /jev gateway          # 当前网关
        jev --status --check  # 命令行活验证
   3. 让 agent 实际调一次 typesafe_evaluate，确认工具已注册
+  4. 若上面 jev-ultrafast 报缺 .env：在 $UF_DIR/.env 填密钥
+       TYPESAFE_API_KEY=...（与 pi 的官方 key 可同一把）
+       TEXT_MODEL_API_KEY=... TEXT_MODEL_BASE_URL=... TEXT_MODEL=...
+  5. jev_route 自检（应列出四个工具的可用性）:
+       pi -p '调 jev_route，task="登录内部系统导出报表"'  # 看输出里的「本机未安装」段
 
 日常用法
   jev "状态描述" -q 问题名:问题内容      # 单次判断
