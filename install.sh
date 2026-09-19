@@ -31,12 +31,20 @@ echo "==> jev-cli installer"
 
 if [[ "$INSTALL_CLI" == "1" ]]; then
   mkdir -p "$HOME/.local/bin"
-  fetch "bin/jev" "$HOME/.local/bin/jev"
-  chmod +x "$HOME/.local/bin/jev"
-  if command -v python3 >/dev/null 2>&1; then
-    echo "    CLI 已安装到 $HOME/.local/bin/jev (python3: $(python3 --version))"
+  # 本地仓库运行 → 装软链，单一事实源（改仓库即生效，重跑 install.sh 不覆盖本地修改）。
+  # 网络安装（curl | bash）没有仓库可链，退回拷贝。
+  if [[ -n "${SRC:-}" ]]; then
+    ln -sf "$SRC/bin/jev" "$HOME/.local/bin/jev"
+    echo "    CLI 已软链到 $HOME/.local/bin/jev → $SRC/bin/jev"
   else
-    echo "    CLI 已安装，但未检测到 python3，请先安装 Python 3"
+    fetch "bin/jev" "$HOME/.local/bin/jev"
+    chmod +x "$HOME/.local/bin/jev"
+    echo "    CLI 已安装到 $HOME/.local/bin/jev（网络安装，独立副本）"
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    echo "    python3: $(python3 --version)"
+  else
+    echo "    ⚠ 未检测到 python3，请先安装 Python 3"
   fi
 fi
 

@@ -30,16 +30,63 @@ const JEV_CLI = process.env.HOME + "/.local/bin/jev";
 const CONFIG_PATH = join(process.env.HOME ?? "", ".pi", "agent", "jev-config.json");
 const AUTH_PATH = join(process.env.HOME ?? "", ".pi", "agent", "auth.json");
 
-// ---- 默认值（与 bin/jev 对齐）----
-const DEFAULT_MODEL = "typesafe/jev-1.13";
-const DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
+// ---- 默认值（网关预设见下方 GATEWAYS，与 bin/jev 的 GATEWAY_PRESETS 对齐）----
 const DEFAULT_TIMEOUT = 90_000; // 工具执行超时（ms）
 
 interface JevConfig {
+	gateway?: string; // "official" | "openrouter"；传给 CLI 的 -g，并作为网关配置的单一事实源
 	model?: string;
 	endpoint?: string;
 	timeoutMs?: number;
 	defaultQuestion?: string; // -q 默认值（name:instructions 缩写或 JSON）
+}
+
+// 网关预设（与 CLI 的 GATEWAY_PRESETS 对齐；CLI 仍是执行侧权威）
+const GATEWAYS: Record<string, { label: string; endpoint: string; model: string }> = {
+	official: {
+		label: "TypeSafe 官方直连",
+		endpoint: "https://api.typesafe.ai/v1/systemone",
+		model: "jev-latest",
+	},
+	openrouter: {
+		label: "OpenRouter Decisions",
+		endpoint: "https://openrouter.ai/api/alpha/decisions",
+		model: "typesafe/jev-1.13",
+	},
+};
+const GATEWAY_CONFIG = join(process.env.HOME ?? "", ".pi", "agent", "jev-gateway.json");
+
+/** 读取 CLI 的网关配置（与 CLI 共用同一个文件，避免两套配置脱节）。 */
+function loadGatewayFile(): string | undefined {
+	try {
+		if (existsSync(GATEWAY_CONFIG)) {
+			const raw = JSON.parse(readFileSync(GATEWAY_CONFIG, "utf-8"));
+			const g = raw?.gateway;
+			if (typeof g === "string" && g in GATEWAYS) return g;
+		}
+	} catch (e) {
+		console.error("[jev] 读取网关配置失败:", e);
+	}
+	return undefined;
+}
+
+/** 写入 CLI 的网关配置（与 `jev --use <gw>` 等价）。 */
+function saveGatewayFile(gateway: string) {
+	let existing: Record<string, unknown> = {};
+	try {
+		if (existsSync(GATEWAY_CONFIG))
+			existing = JSON.parse(readFileSync(GATEWAY_CONFIG, "utf-8")) ?? {};
+	} catch {
+		/* 文件损坏就重写 */
+	}
+	existing.gateway = gateway;
+	writeFileSync(GATEWAY_CONFIG, JSON.stringify(existing, null, 2) + "\n", "utf-8");
+}
+
+/** 有效网关：扩展配置 > CLI 网关文件 > 默认 official。 */
+function effectiveGateway(cfg: JevConfig): string {
+	if (cfg.gateway && cfg.gateway in GATEWAYS) return cfg.gateway;
+	return loadGatewayFile() ?? "official";
 }
 
 function loadConfig(): JevConfig {
@@ -71,7 +118,22 @@ function writeAuthKey(key: string) {
 	writeFileSync(AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", "utf-8");
 }
 
-function hasAuthKey(): boolean {
+function hasAuthKey(gateway: string): boolean {
+	if (process.env.JEV_API_KEY) return true;
+	if (gateway === "official") {
+		if (process.env.TYPESAFE_API_KEY) return true;
+		try {
+			const p = join(process.env.HOME ?? "", ".pi", "agent", "pi-typesafe", "auth.json");
+			if (existsSync(p)) {
+				const k = JSON.parse(readFileSync(p, "utf-8"))?.apiKey;
+				if (typeof k === "string" && k.length > 0) return true;
+			}
+		} catch {
+			/* ignore */
+		}
+		return false;
+	}
+	if (process.env.OPENROUTER_API_KEY) return true;
 	try {
 		if (existsSync(AUTH_PATH)) {
 			const auth = JSON.parse(readFileSync(AUTH_PATH, "utf-8"));
@@ -81,17 +143,65 @@ function hasAuthKey(): boolean {
 	} catch {
 		/* ignore */
 	}
-	return !!process.env.OPENROUTER_API_KEY;
+	return false;
+}
+
+const TYPESAFE_AUTH_PATH = join(process.env.HOME ?? "", ".pi", "agent", "pi-typesafe", "auth.json");
+
+/** 写入官方 TypeSafe key（pi-typesafe 的 auth.json，与 /typesafe login 同一处）。 */
+function writeTypesafeKey(key: string) {
+	let auth: Record<string, unknown> = {};
+	try {
+		if (existsSync(TYPESAFE_AUTH_PATH))
+			auth = JSON.parse(readFileSync(TYPESAFE_AUTH_PATH, "utf-8")) ?? {};
+	} catch (e) {
+		console.error("[jev] 读取 pi-typesafe/auth.json 失败:", e);
+	}
+	auth.apiKey = key;
+	writeFileSync(TYPESAFE_AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", {
+		encoding: "utf-8",
+		mode: 0o600,
+	});
+}
+
+function clearTypesafeKey() {
+	try {
+		if (existsSync(TYPESAFE_AUTH_PATH)) {
+			const auth = JSON.parse(readFileSync(TYPESAFE_AUTH_PATH, "utf-8")) ?? {};
+			delete auth.apiKey;
+			writeFileSync(TYPESAFE_AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
+		}
+	} catch (e) {
+		console.error("[jev] 清除官方 key 失败:", e);
+	}
+}
+
+function clearOpenRouterKey() {
+	try {
+		if (existsSync(AUTH_PATH)) {
+			const auth = JSON.parse(readFileSync(AUTH_PATH, "utf-8"));
+			if (auth?.openrouter) delete (auth.openrouter as Record<string, unknown>).key;
+			writeFileSync(AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", "utf-8");
+		}
+	} catch (e) {
+		console.error("[jev] 清除 key 失败:", e);
+	}
 }
 
 function formatConfig(cfg: JevConfig): string {
+	const gw = effectiveGateway(cfg);
+	const preset = GATEWAYS[gw];
 	const lines = [
 		"Jev CLI 配置:",
-		`  model        : ${cfg.model ?? DEFAULT_MODEL}`,
-		`  endpoint     : ${cfg.endpoint ?? DEFAULT_ENDPOINT}`,
+		`  gateway      : ${gw} (${preset.label})${cfg.gateway ? "  [jev-config.json]" : ""}`,
+		`  端点         : ${cfg.endpoint ?? preset.endpoint}${cfg.endpoint ? "  ← 覆盖网关预设" : ""}`,
+		`  模型         : ${cfg.model ?? preset.model}${cfg.model ? "  ← 覆盖网关预设（跨网关模型名不通用）" : ""}`,
 		`  timeout(ms)  : ${cfg.timeoutMs ?? DEFAULT_TIMEOUT}`,
 		`  defaultQuestion: ${cfg.defaultQuestion ?? "（未设置，默认问 is_urgent）"}`,
-		`  API key      : ${hasAuthKey() ? "✓ 已配置 (auth.json 或 OPENROUTER_API_KEY)" : "✗ 未配置"}`,
+		`  API key      : ${hasAuthKey(gw) ? `✓ 已配置（${gw} 对应来源）` : "✗ 未配置"}`,
 	];
 	return lines.join("\n");
 }
@@ -117,14 +227,13 @@ export default function jevExtension(pi: ExtensionAPI) {
 					Type.Object({
 						type: Type.Literal("noul"),
 						instructions: Type.String({
-							description:
-								"Instruction or yes/no question. May be empty string.",
+							description: "Instruction or yes/no question. May be empty string.",
 						}),
 						criteria: Type.Optional(
 							Type.Object({
 								true: Type.Optional(Type.String()),
 								false: Type.Optional(Type.String()),
-							})
+							}),
 						),
 					}),
 					Type.Object({
@@ -141,7 +250,7 @@ export default function jevExtension(pi: ExtensionAPI) {
 				{
 					description:
 						"Questions to ask Jev, keyed by name. Each question has type (noul/choice/score), instructions, and criteria.",
-				}
+				},
 			),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -151,7 +260,9 @@ export default function jevExtension(pi: ExtensionAPI) {
 			};
 			const jsonSpec = JSON.stringify(questions);
 			const cfg = loadConfig();
+			const gateway = effectiveGateway(cfg);
 			const args: string[] = [state, "-q", jsonSpec, "-j"];
+			args.push("-g", gateway);
 			if (cfg.model) args.push("-m", cfg.model);
 			if (cfg.endpoint) args.push("-e", cfg.endpoint);
 			if (cfg.timeoutMs) args.push("-t", String(Math.round(cfg.timeoutMs / 1000)));
@@ -167,7 +278,12 @@ export default function jevExtension(pi: ExtensionAPI) {
 				const answers = (result.answers ?? {}) as Record<string, unknown>;
 				const lines: string[] = [];
 				for (const [name, ans] of Object.entries(answers)) {
-					const a = ans as { type?: string; noul?: number; choice?: string; score?: number };
+					const a = ans as {
+						type?: string;
+						noul?: number;
+						choice?: string;
+						score?: number;
+					};
 					if (a.type === "noul" && typeof a.noul === "number") {
 						lines.push(`${name}: noul=${a.noul.toFixed(3)} (P(true))`);
 					} else if (a.type === "choice") {
@@ -180,15 +296,23 @@ export default function jevExtension(pi: ExtensionAPI) {
 				}
 				const usage = (result.usage ?? {}) as Record<string, unknown>;
 				const cost =
-					typeof usage.cost === "number" ? ` $${usage.cost.toFixed(6)}` : "";
+					typeof usage.cost === "number"
+						? ` $${usage.cost.toFixed(6)}`
+						: typeof usage.input_tokens === "number"
+							? ` $${(((usage.input_tokens as number) / 1e6) * 0.042).toFixed(6)}（估算）`
+							: "";
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: lines.join("\n") + (cost ? `\nusage: ${cost}` : ""),
+							text:
+								lines.join("\n") +
+								`\n网关: ${gateway}  模型: ${result.model}` +
+								(cost ? `\nusage: ${cost}` : ""),
 						},
 					],
 					details: {
+						gateway,
 						model: result.model,
 						answers,
 						usage,
@@ -205,24 +329,70 @@ export default function jevExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("jev", {
-		description:
-			"查看 Jev 配置/用法；`/jev config` 交互式配置（模型、端点、默认问题、API key）",
+		description: "查看 Jev 配置/用法；`/jev config` 交互式配置（模型、端点、默认问题、API key）",
 		handler: async (args, ctx) => {
 			const trimmed = (args ?? "").trim();
 			const cfg = loadConfig();
 
 			// 非 config 子命令：显示状态 + 用法
 			if (trimmed !== "config") {
-				const usage = [
+				// /jev gateway [name] — 与 `jev --use` 写同一个文件
+				if (trimmed === "gateway" || trimmed.startsWith("gateway ")) {
+					const target = trimmed.slice("gateway".length).trim().toLowerCase();
+					if (!target) {
+						const cur = effectiveGateway(cfg);
+						ctx.ui.notify(
+							`当前网关: ${cur} (${GATEWAYS[cur].label})\n` +
+								`可用: ${Object.keys(GATEWAYS).join(" | ")}\n` +
+								`切换: /jev gateway openrouter\n\n${formatConfig(cfg)}`,
+							"info",
+						);
+						return;
+					}
+					if (!(target in GATEWAYS)) {
+						ctx.ui.notify(
+							`未知网关 ${target}；可选: ${Object.keys(GATEWAYS).join(" | ")}`,
+							"warning",
+						);
+						return;
+					}
+					saveGatewayFile(target);
+					// 让 jev-config.json 不再用另一网关的模型名/端点压过预设
+					const cleared: string[] = [];
+					if (cfg.gateway) {
+						cfg.gateway = target;
+						cleared.push("gateway");
+					}
+					if (cfg.model && cfg.model !== GATEWAYS[target].model) {
+						delete cfg.model;
+						cleared.push("model");
+					}
+					if (cfg.endpoint && cfg.endpoint !== GATEWAYS[target].endpoint) {
+						delete cfg.endpoint;
+						cleared.push("endpoint");
+					}
+					if (cleared.length) saveConfig(cfg);
+					ctx.ui.notify(
+						`已切换网关 → ${target} (${GATEWAYS[target].label})\n` +
+							`端点: ${GATEWAYS[target].endpoint}\n模型: ${GATEWAYS[target].model}\n` +
+							(cleared.length ? `已从 jev-config.json 清除冲突项: ${cleared.join(", ")}\n` : "") +
+							`写入 ${GATEWAY_CONFIG}（与 \`jev --use ${target}\` 等价）`,
+						"info",
+					);
+					return;
+				}
+
+				const usageLines = [
 					"用法:",
 					"  /jev           显示当前配置与用法",
-					"  /jev config    交互式配置（模型/端点/默认问题/API key）",
+					"  /jev config    交互式配置（网关/模型/端点/默认问题/API key）",
+					"  /jev gateway [official|openrouter]   查看或切换网关（写 jev-gateway.json）",
 					"  /jev show      查看当前配置 JSON",
 					"  /jev reset     恢复默认配置",
 					"",
 					"LLM 侧工具: jev(state, questions) — 结构化决策",
-				];
-				ctx.ui.notify(formatConfig(cfg) + "\n\n" + usage.join("\n"), "info");
+				].join("\n");
+				ctx.ui.notify(formatConfig(cfg) + "\n\n" + usageLines, "info");
 				return;
 			}
 
@@ -232,6 +402,20 @@ export default function jevExtension(pi: ExtensionAPI) {
 			}
 
 			// ---- 交互式配置向导 ----
+			// 0. 网关
+			const curGw = effectiveGateway(cfg);
+			const gwChoices = Object.entries(GATEWAYS).map(([k, v]) => `${k}: ${v.label} — ${v.model}`);
+			const pickGw = await ctx.ui.select(`选择网关（当前 ${curGw}）`, gwChoices);
+			let gateway = cfg.gateway;
+			if (pickGw) {
+				const g = pickGw.split(":")[0].trim();
+				if (g in GATEWAYS) {
+					gateway = g;
+					saveGatewayFile(g);
+				}
+			}
+			const gwModel = GATEWAYS[gateway ?? curGw].model;
+
 			let model = cfg.model ?? "";
 			let endpoint = cfg.endpoint ?? "";
 			let timeoutSec = cfg.timeoutMs ? Math.round(cfg.timeoutMs / 1000) : 0;
@@ -239,34 +423,36 @@ export default function jevExtension(pi: ExtensionAPI) {
 
 			// 1. 模型
 			const modelChoices = [
-				{ value: "typesafe/jev-1.13", label: "typesafe/jev-1.13", description: "默认模型（推荐）" },
+				{ value: gwModel, label: gwModel, description: `网关预设（推荐）` },
 				{ value: "custom", label: "自定义…", description: "手动输入模型 ID" },
 			];
 			const pickModel = await ctx.ui.select(
-				"选择 Jev 模型（默认 typesafe/jev-1.13）",
-				modelChoices.map((c) => `${c.value}: ${c.label} — ${c.description}`)
+				`选择 Jev 模型（默认 ${gwModel}）`,
+				modelChoices.map((c) => `${c.value}: ${c.label} — ${c.description}`),
 			);
 			if (pickModel) {
 				if (pickModel.startsWith("custom")) {
-					const m = await ctx.ui.input("模型 ID:", model || "typesafe/jev-1.13");
+					const m = await ctx.ui.input("模型 ID:", model || gwModel);
 					if (m) model = m.trim();
 				} else {
 					model = pickModel.split(":")[0].trim();
+					if (model === gwModel) model = ""; // 等于预设就不落盘，避免以后切网关时冲突
 				}
 			}
 
 			// 2. 端点
+			const epPreset = GATEWAYS[gateway ?? curGw].endpoint;
 			const epChoices = [
-				{ value: "default", label: "OpenRouter 官方", description: DEFAULT_ENDPOINT },
+				{ value: "default", label: "跟随网关预设", description: epPreset },
 				{ value: "custom", label: "自定义…", description: "手动输入端点 URL" },
 			];
 			const pickEp = await ctx.ui.select(
 				"选择 Decisions API 端点",
-				epChoices.map((c) => `${c.value}: ${c.label} — ${c.description}`)
+				epChoices.map((c) => `${c.value}: ${c.label} — ${c.description}`),
 			);
 			if (pickEp) {
 				if (pickEp.startsWith("custom")) {
-					const e = await ctx.ui.input("端点 URL:", endpoint || DEFAULT_ENDPOINT);
+					const e = await ctx.ui.input("端点 URL:", endpoint || epPreset);
 					if (e) endpoint = e.trim();
 				} else {
 					endpoint = "";
@@ -274,14 +460,17 @@ export default function jevExtension(pi: ExtensionAPI) {
 			}
 
 			// 3. 超时（秒）
-			const tInput = await ctx.ui.input("超时秒数（回车保留默认）:", timeoutSec ? String(timeoutSec) : "90");
+			const tInput = await ctx.ui.input(
+				"超时秒数（回车保留默认）:",
+				timeoutSec ? String(timeoutSec) : "90",
+			);
 			const tParsed = tInput ? parseInt(tInput.trim(), 10) : NaN;
 			if (!Number.isNaN(tParsed) && tParsed > 0) timeoutSec = tParsed;
 
 			// 4. 默认问题（-q）
 			const dqInput = await ctx.ui.input(
 				"默认问题（-q，name:instructions 或 JSON，回车清空/保持）:",
-				defaultQuestion
+				defaultQuestion,
 			);
 			defaultQuestion = dqInput?.trim() ?? defaultQuestion;
 
@@ -289,44 +478,50 @@ export default function jevExtension(pi: ExtensionAPI) {
 			let key = "";
 			const keyChoices = [
 				{ value: "skip", label: "保持不变", description: "不修改现有 key" },
-				{ value: "input", label: "输入新 key", description: "写入 ~/.pi/agent/auth.json" },
-				{ value: "clear", label: "清除 key", description: "从 auth.json 删除 openrouter.key" },
+				{
+					value: "input",
+					label: "输入新 key",
+					description: "写入 ~/.pi/agent/auth.json",
+				},
+				{
+					value: "clear",
+					label: "清除 key",
+					description: "从 auth.json 删除 openrouter.key",
+				},
 			];
 			const pickKey = await ctx.ui.select(
-				"OpenRouter API key 如何处理?",
-				keyChoices.map((c) => `${c.value}: ${c.label} — ${c.description}`)
+				`API key 如何处理?（当前网关 ${gateway ?? curGw}）`,
+				keyChoices.map((c) => `${c.value}: ${c.label} — ${c.description}`),
 			);
 			if (pickKey) {
 				if (pickKey.startsWith("input")) {
-					const k = await ctx.ui.input("OpenRouter API key:", "");
+					const k = await ctx.ui.input("API key:", "");
 					if (k && k.trim()) {
 						key = k.trim();
-						writeAuthKey(key);
+						if ((gateway ?? curGw) === "official") writeTypesafeKey(key);
+						else writeAuthKey(key);
 					}
 				} else if (pickKey.startsWith("clear")) {
-					try {
-						if (existsSync(AUTH_PATH)) {
-							const auth = JSON.parse(readFileSync(AUTH_PATH, "utf-8"));
-							if (auth?.openrouter) delete (auth.openrouter as Record<string, unknown>).key;
-							writeFileSync(AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", "utf-8");
-						}
-					} catch (e) {
-						console.error("[jev] 清除 key 失败:", e);
-					}
+					if ((gateway ?? curGw) === "official") clearTypesafeKey();
+					else clearOpenRouterKey();
 				}
 			}
 
 			const newCfg: JevConfig = {};
-			if (model && model !== DEFAULT_MODEL) newCfg.model = model;
-			if (endpoint && endpoint !== DEFAULT_ENDPOINT) newCfg.endpoint = endpoint;
+			if (gateway && gateway !== (loadGatewayFile() ?? "official")) newCfg.gateway = gateway;
+			if (model && model !== gwModel) newCfg.model = model;
+			if (endpoint && endpoint !== epPreset) newCfg.endpoint = endpoint;
 			if (timeoutSec && timeoutSec !== 90) newCfg.timeoutMs = timeoutSec * 1000;
 			if (defaultQuestion) newCfg.defaultQuestion = defaultQuestion;
 			saveConfig(newCfg);
 
 			ctx.ui.notify(
-				"Jev 配置已保存 → " + CONFIG_PATH + "\n" + formatConfig(newCfg) +
-				(key ? "\nAPI key 已写入 auth.json" : ""),
-				"info"
+				"Jev 配置已保存 → " +
+					CONFIG_PATH +
+					"\n" +
+					formatConfig(newCfg) +
+					(key ? "\nAPI key 已写入 auth.json" : ""),
+				"info",
 			);
 		},
 	});

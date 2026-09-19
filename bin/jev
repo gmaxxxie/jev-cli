@@ -65,6 +65,8 @@ GATEWAY_PRESETS = {
         "endpoint": "https://api.typesafe.ai/v1/systemone",
         "model": "jev-latest",
         "label": "TypeSafe 官方直连",
+        "models_path": "/v1/models",
+        "model_prefix": "jev-",
     },
 }
 DEFAULT_GATEWAY = "official"
@@ -76,6 +78,7 @@ DEFAULT_MODEL = GATEWAY_PRESETS[DEFAULT_GATEWAY]["model"]
 AUTH_JSON = os.path.expanduser("~/.pi/agent/auth.json")
 TYPESAFE_AUTH_JSON = os.path.expanduser("~/.pi/agent/pi-typesafe/auth.json")
 GATEWAY_CONFIG = os.path.expanduser("~/.pi/agent/jev-gateway.json")
+JEV_CONFIG = os.path.expanduser("~/.pi/agent/jev-config.json")
 
 VALID_TYPES = ("noul", "choice", "score")
 
@@ -84,7 +87,7 @@ USD_PER_MTOK = 0.042
 
 
 def resolve_gateway(explicit=None):
-    """flag > JEV_GATEWAY > jev-gateway.json > 默认 openrouter"""
+    """flag > JEV_GATEWAY > jev-gateway.json > 默认 official"""
     g = explicit or os.environ.get("JEV_GATEWAY")
     if not g:
         try:
@@ -201,6 +204,66 @@ def call_decisions(state, questions, model, endpoint, api_key, timeout):
         raise SystemExit(f"HTTP {e.code}: {body}") from e
 
 
+def _read_jev_config_model():
+    """~/.pi/agent/jev-config.json 的 model（jev-cli 扩展写的，会以 -m 压过网关预设）。"""
+    try:
+        with open(JEV_CONFIG, encoding="utf-8") as f:
+            m = (json.load(f) or {}).get("model")
+        return m.strip() if isinstance(m, str) and m.strip() else None
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def model_gateway_conflict(model, gateway):
+    """模型名是否属于另一条网关（两侧命名空间不通用）。
+
+    OpenRouter 用 `typesafe/jev-1.13`；官方直连只认 `jev-latest` / `jev-preview` /
+    `jev-1.13.0`。跨网关传模型名会被 API 以 400 Unknown model 拒掉，
+    所以提前拦下来，给出可操作的提示。
+    """
+    if not model:
+        return None
+    if gateway == "official":
+        if model.startswith("typesafe/"):
+            return (f"模型 {model!r} 是 OpenRouter 的命名（typesafe/…），官方直连不认；"
+                    f"用 jev-latest / jev-preview / jev-1.13.0，或切回 -g openrouter")
+        prefix = GATEWAY_PRESETS["official"].get("model_prefix", "jev-")
+        if not model.startswith(prefix):
+            return (f"模型 {model!r} 看起来不是官方 System One 模型（应形如 {prefix}…）；"
+                    f"可用 jev-latest / jev-preview / jev-1.13.0")
+    else:
+        if model.startswith("jev-"):
+            return (f"模型 {model!r} 是官方直连的命名，OpenRouter 不认；"
+                    f"用 typesafe/jev-1.13，或切到 -g official")
+        if not model.startswith("typesafe/"):
+            return (f"模型 {model!r} 看起来不是 OpenRouter 上的 Jev（应形如 typesafe/…）")
+    return None
+
+
+def warn_if_overridden(gateway, endpoint, model, explicit_model, explicit_endpoint):
+    """-m/-e 或 jev-config.json 压过网关预设时，在 stderr 提示（不阻断）。"""
+    if explicit_endpoint or os.environ.get("JEV_ENDPOINT"):
+        preset = GATEWAY_PRESETS[gateway]["endpoint"]
+        if endpoint != preset:
+            print(f"[jev] 注意：端点被显式覆盖为 {endpoint}（网关 {gateway} 的预设是 {preset}）",
+                  file=sys.stderr)
+    source = None
+    if explicit_model:
+        source = "-m"
+    elif os.environ.get("JEV_MODEL"):
+        source = "JEV_MODEL"
+    elif model != GATEWAY_PRESETS[gateway]["model"] and _read_jev_config_model() == model:
+        source = JEV_CONFIG
+    if source:
+        preset = GATEWAY_PRESETS[gateway]["model"]
+        if model != preset:
+            print(f"[jev] 注意：模型被 {source} 覆盖为 {model}（网关 {gateway} 的预设是 {preset}）；"
+                  f"跨网关的模型名不通用，`jev --use` 可能因此不生效", file=sys.stderr)
+            conflict = model_gateway_conflict(model, gateway)
+            if conflict:
+                print(f"[jev] 警告：{conflict}", file=sys.stderr)
+
+
 def _key_available(gateway):
     """key 是否存在（不打印 key 本身）。"""
     try:
@@ -210,12 +273,57 @@ def _key_available(gateway):
         return False
 
 
-def _describe(gateway):
+def probe(gateway):
+    """活验证：走一次免费的 GET 拿模型列表，确认端点可达 + key 真的有效。
+
+    返回 (ok, 详情文本, 模型名列表)。官方直连用 /v1/models；
+    OpenRouter 用 /api/v1/key（返回 key 的用量，不产生模型调用）。
+    """
+    key = resolve_api_key(None, gateway)
+    if gateway == "official":
+        url = "https://api.typesafe.ai" + GATEWAY_PRESETS["official"]["models_path"]
+    else:
+        url = "https://openrouter.ai/api/v1/key"
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + key}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:300]
+        return False, f"HTTP {e.code}: {body}", []
+    except (urllib.error.URLError, OSError) as e:
+        return False, f"连接失败: {e}", []
+    if gateway == "official":
+        names = [m.get("name") for m in (data.get("models") or [])
+                 if isinstance(m, dict) and m.get("name")]
+        return True, "key 有效，端点可达", names
+    d = data.get("data") or {}
+    used = d.get("usage")
+    label = d.get("label")
+    detail = "key 有效，端点可达"
+    if used is not None:
+        detail += f"；累计用量 ${used}"
+    if label:
+        detail += f"（{label}）"
+    return True, detail, []
+
+
+def _describe(gateway, check=False):
     p = GATEWAY_PRESETS[gateway]
-    return (f"网关:   {gateway}  ({p['label']})\n"
-            f"端点:   {resolve_endpoint(None, gateway)}\n"
-            f"模型:   {resolve_model(None, gateway)}\n"
-            f"key:    {'已就绪' if _key_available(gateway) else '缺失'}")
+    lines = [f"网关:   {gateway}  ({p['label']})",
+             f"端点:   {resolve_endpoint(None, gateway)}",
+             f"模型:   {resolve_model(None, gateway)}"]
+    if not _key_available(gateway):
+        lines.append("key:    缺失（文件/环境变量里都没有）")
+        return "\n".join(lines)
+    if not check:
+        lines.append("key:    已就绪（仅检查是否存在；--check 可做活验证）")
+        return "\n".join(lines)
+    ok, detail, names = probe(gateway)
+    lines.append(f"key:    {'✓ ' if ok else '✗ '}{detail}")
+    if names:
+        lines.append("可用模型: " + ", ".join(names))
+    return "\n".join(lines)
 
 
 def do_switch(gateway):
@@ -240,7 +348,7 @@ def do_switch(gateway):
     return 0
 
 
-def do_status():
+def do_status(check=False):
     persisted = None
     try:
         with open(GATEWAY_CONFIG, encoding="utf-8") as f:
@@ -253,8 +361,16 @@ def do_status():
     for env_name in ("JEV_GATEWAY", "JEV_ENDPOINT", "JEV_MODEL"):
         if os.environ.get(env_name):
             print(f"环境变量: {env_name}={os.environ[env_name]}  ← 覆盖配置文件")
+    cfg_model = _read_jev_config_model()
+    if cfg_model:
+        print(f"扩展配置: {JEV_CONFIG} → model={cfg_model}  ← 会以 -m 压过网关预设")
     print()
-    print(_describe(resolve_gateway(None)))
+    gateway = resolve_gateway(None)
+    print(_describe(gateway, check=check))
+    if cfg_model:
+        conflict = model_gateway_conflict(cfg_model, gateway)
+        if conflict:
+            print(f"\n⚠ 冲突：{conflict}")
     return 0
 
 
@@ -272,18 +388,24 @@ def main():
     ap.add_argument("--use", metavar="GATEWAY",
                     help=f"切换默认网关并持久化到 {GATEWAY_CONFIG}，然后退出")
     ap.add_argument("--status", action="store_true", help="显示当前网关/端点/模型/key 状态，然后退出")
+    ap.add_argument("--check", action="store_true",
+                    help="配合 --status：走一次免费 GET 做活验证（key 是否真有效 + 可用模型列表）")
     ap.add_argument("-t", "--timeout", type=int, default=60)
     ap.add_argument("-j", "--json", action="store_true", help="输出原始 JSON（含 usage）")
     args = ap.parse_args()
 
     if args.use:
         return do_switch(args.use)
-    if args.status:
-        return do_status()
+    if args.status or args.check:
+        return do_status(check=args.check)
 
     gateway = resolve_gateway(args.gateway)
     endpoint = resolve_endpoint(args.endpoint, gateway)
     model = resolve_model(args.model, gateway)
+    conflict = model_gateway_conflict(model, gateway)
+    if conflict and (args.model or os.environ.get("JEV_MODEL")):
+        raise SystemExit(f"模型/网关不匹配：{conflict}")
+    warn_if_overridden(gateway, endpoint, model, args.model, args.endpoint)
     if args.state is None:
         print("（从 stdin 读取 state，Ctrl-D 结束）", file=sys.stderr)
         state = sys.stdin.read().strip()
@@ -310,6 +432,8 @@ def main():
                             endpoint=endpoint, api_key=api_key, timeout=args.timeout)
 
     if args.json:
+        # stdout 保持纯 JSON（调用方只解析 stdout）；网关信息走 stderr。
+        print(f"[jev] 网关: {gateway}  端点: {endpoint}  模型: {model}", file=sys.stderr)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 

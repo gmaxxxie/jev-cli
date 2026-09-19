@@ -56,9 +56,13 @@ To pin a specific release instead, append a tag: `pi install git:github.com/gmax
 ### Manual install
 
 ```bash
-# 1. CLI script
+# 1. CLI script — symlink when installing from a local clone so there is one source of truth
 mkdir -p ~/.local/bin
-cp bin/jev ~/.local/bin/jev && chmod +x ~/.local/bin/jev
+ln -sf "$PWD/bin/jev" ~/.local/bin/jev
+
+# ...or `bash install.sh`, which symlinks automatically when run inside the repo
+# and only falls back to a copy for the `curl | bash` network install.
+# If you already have a copy, replace it: install.sh would otherwise overwrite local edits.
 
 # 2. pi extensions — use the pi package instead of copying to ~/.pi/agent/extensions
 #    (copying would conflict with the package's same-named tools)
@@ -111,6 +115,7 @@ jev "payout failed 3x in a row" -q '{"urgent":{"type":"noul",\
 | `--key` | Explicit API key | env / auth file (per gateway) |
 | `--use <gw>` | Switch the persisted default gateway, then exit | — |
 | `--status` | Show resolved gateway / endpoint / model / key availability, then exit | — |
+| `--check` | With `--status`: live-verify the key with a free GET + list available models | — |
 | `-t` | Timeout seconds | 60 |
 | `-j` | Raw JSON output | — |
 
@@ -125,9 +130,24 @@ Two interchangeable paths to the same model at the same price ($0.042/1M input, 
 
 ```bash
 jev --status              # which gateway is active
+jev --check               # live-verify: key really works + list available models
 jev --use openrouter      # switch to OpenRouter (persisted)
 jev --use official        # switch back to TypeSafe direct
 ```
+
+`--status` only checks that a key *exists*; `--check` makes one free request (`GET /v1/models` on the official gateway, `GET /api/v1/key` on OpenRouter) to confirm the key is accepted and the endpoint is reachable — the same failure mode pi-typesafe's README warns about (an enabled tool with a dead key looks identical to a working one).
+
+**Model names are not portable across gateways.** The official API rejects `typesafe/jev-1.13` with `400 Unknown model`; OpenRouter does not serve `jev-latest`. The CLI refuses the mismatch up front instead of letting the API 400:
+
+```
+$ jev "..." -q ok:ok? -m typesafe/jev-1.13
+模型/网关不匹配：模型 'typesafe/jev-1.13' 是 OpenRouter 的命名（typesafe/…），官方直连不认；
+用 jev-latest / jev-preview / jev-1.13.0，或切回 -g openrouter
+```
+
+Verified on the official gateway: `jev-latest` → 200, `jev-1.13.0` → 200, `jev-1.13` → 400. `jev-latest` is a floating tag (currently resolves to `jev-1.13.0`), so pin `-m jev-1.13.0` when a judgment must be reproducible.
+
+If `-m` / `-e` / `$JEV_MODEL` / `~/.pi/agent/jev-config.json` overrides a gateway preset, the CLI prints a note on **stderr** (it never blocks) — stdout stays clean so callers that parse `--json` output are unaffected.
 
 Resolution order (high → low): CLI flag (`-g` / `-e` / `-m`) > env (`JEV_GATEWAY` / `JEV_ENDPOINT` / `JEV_MODEL`) > `~/.pi/agent/jev-gateway.json` > default `official`. The request body and response shape are identical on both paths; only `provider` and `usage.cost` are OpenRouter-only extras (the CLI estimates cost from input tokens when absent).
 
@@ -150,13 +170,14 @@ jev(state: "database primary CPU 95%",
 Registers a `/jev` slash command for configuring the CLI defaults inside pi:
 
 - `/jev` — show current config and usage
-- `/jev config` — interactive wizard (model, endpoint, timeout, default question, API key)
+- `/jev config` — interactive wizard (gateway, model, endpoint, timeout, default question, API key)
+- `/jev gateway [official|openrouter]` — show or switch the gateway (writes `~/.pi/agent/jev-gateway.json`)
 - `/jev show` — show the current config as JSON
 - `/jev reset` — restore defaults (delete config file)
 
-Config is stored in `~/.pi/agent/jev-config.json` (model / endpoint / timeoutMs / defaultQuestion). The API key is resolved by the CLI per gateway (see [Gateways](#gateways-typesafe-direct-vs-openrouter)); `install.sh` only ever wrote the OpenRouter one. The `jev` tool reads this config and passes `-m` / `-e` / `-t` to the CLI, so defaults you set here apply to LLM-driven calls too.
+Config is stored in `~/.pi/agent/jev-config.json` (gateway / model / endpoint / timeoutMs / defaultQuestion). The API key is resolved by the CLI per gateway (see [Gateways](#gateways-typesafe-direct-vs-openrouter)); `install.sh` only ever wrote the OpenRouter one. The `jev` tool reads this config and passes `-g` / `-m` / `-e` / `-t` to the CLI, so defaults you set here apply to LLM-driven calls too.
 
-> **Note:** the CLI's gateway (`~/.pi/agent/jev-gateway.json`) and this extension config are independent. A model/endpoint pinned in `jev-config.json` is passed as `-m` / `-e`, which **outranks** the gateway preset — so if you pinned OpenRouter values via `/jev config`, clear or update them before relying on `jev --use official`.
+`/jev gateway [official|openrouter]` reads and writes the **same** `~/.pi/agent/jev-gateway.json` as `jev --use`, so the extension and the CLI cannot drift apart. Switching also drops any `model` / `endpoint` from `jev-config.json` that belonged to the other gateway (they would otherwise outrank the preset and cause a 400).
 
 ### `jev_triage` — multi-candidate decision support
 
