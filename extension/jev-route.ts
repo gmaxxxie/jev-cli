@@ -25,7 +25,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
@@ -78,14 +81,79 @@ const RISK: Record<ToolId, number> = {
 	"jev-ultrafast": 3,
 };
 
+// ── 可用性检测 ──
+// 清单仍写死（保证可复现），但每台设备实际装了什么不一样。不检测的话，
+// 路由会把任务推给一个不存在的工具，主模型拿到推荐后调用失败。
+// 检测只做标注与候选剔除，不改路由原则。
+
+/** 取 pi 的包安装记录，判断某个 pi 包是否已装（扩展只能靠这个判断工具是否注册）。 */
+function piPackages(): string {
+	const settingsPath = join(homedir(), ".pi", "agent", "settings.json");
+	try {
+		if (!existsSync(settingsPath)) return "";
+		const s = JSON.parse(readFileSync(settingsPath, "utf-8")) as { packages?: unknown };
+		return Array.isArray(s.packages) ? s.packages.join("\n") : "";
+	} catch {
+		return "";
+	}
+}
+
+/** 可执行文件是否在 PATH 里（用 shell 的 `command -v` 语义，兼容非 POSIX 路径）。 */
+function onPath(bin: string): boolean {
+	try {
+		const out = execFileSync(process.platform === "win32" ? "where" : "which", [bin], {
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 3000,
+		});
+		return out.toString().trim().length > 0;
+	} catch {
+		return false;
+	}
+}
+
+interface Availability {
+	available: boolean;
+	/** 不可用时的原因/安装提示 */
+	hint?: string;
+}
+
+/**
+ * 检测清单里每个工具是否真的可用。检测项与 `bootstrap/install-jev-stack.sh` 的
+ * 安装步骤一一对应，装了就能被认出来。
+ */
+function detectAvailability(): Record<ToolId, Availability> {
+	const pkgs = piPackages();
+	const hasWebAccess = pkgs.includes("pi-web-access");
+	const hasBrowser = onPath("agent-browser");
+	const ufDir = process.env.JEV_ULTRAFAST_DIR ?? join(homedir(), "Project", "jev-ultrafast");
+	const hasUltrafast = existsSync(join(ufDir, "pyproject.toml"));
+
+	return {
+		fetch_content: hasWebAccess
+			? { available: true }
+			: { available: false, hint: "pi install npm:pi-web-access" },
+		web_search: hasWebAccess
+			? { available: true }
+			: { available: false, hint: "pi install npm:pi-web-access" },
+		"agent-browser": hasBrowser
+			? { available: true }
+			: { available: false, hint: "npm install -g agent-browser" },
+		"jev-ultrafast": hasUltrafast
+			? { available: true }
+			: {
+					available: false,
+					hint: "git clone https://github.com/browser-use/jev-ultrafast ~/Project/jev-ultrafast && uv sync",
+				},
+	};
+}
+
 // ── 信号识别（模块级，避免每次重建正则） ──
 const RE_INTERACT =
 	/点击|点一下|点它|按下|填表|填写|填入|提交|登录|登陆|下单|购买|买一|帮我买|订票|订一张|帮我订|输入|勾选|选择|申请|导出|下载/;
 const RE_BULK = /批量|全部|所有|每个|逐个|\d{2,}\s*个|多少个|N ?个|一批/;
 const RE_OWN =
 	/内部|自有|我们自己的|我们团队|自己团队|自家|管理系统|监控面板|布局固定|位置.*知道|元素.*知道|三年没改|很久没改|不会改/;
-const RE_THIRDPARTY =
-	/第三方|别人|外部|陌生|没见过|不确定|会改版|偶尔调整|改版|竞品|大厂|变动/;
+const RE_THIRDPARTY = /第三方|别人|外部|陌生|没见过|不确定|会改版|偶尔调整|改版|竞品|大厂|变动/;
 const RE_VOLATILE = /改版|变动|调整|不稳定/;
 const RE_SEARCH = /搜索|搜一下|查一下|查查|最新消息|有什么新闻/;
 const RE_READONLY =
@@ -123,10 +191,7 @@ function ruleRoute(task: string): RuleResult {
 
 	// R3 第三方/易变页面 → 元素引用会失效，交由模型看页面自己找路
 	if (signals.thirdparty && (signals.interact || signals.volatile))
-		return pick(
-			"jev-ultrafast",
-			"R3 第三方或易变页面 → 元素引用会静默失效，需模型自适应找路"
-		);
+		return pick("jev-ultrafast", "R3 第三方或易变页面 → 元素引用会静默失效，需模型自适应找路");
 
 	// R4 搜索意图且无指定页面 → 直接联网搜索
 	if (signals.search && !signals.readonly)
@@ -137,15 +202,12 @@ function ruleRoute(task: string): RuleResult {
 		return pick("fetch_content", "R5 无需交互 → 只读抓取即可，先探路再决定是否上浏览器");
 
 	// R6 兜底：需要交互且无更省手段 → 保守选模型自主决策
-	return pick(
-		"jev-ultrafast",
-		"R6 需要交互且无更省手段 → 模型自主决策（兜底保守选择）"
-	);
+	return pick("jev-ultrafast", "R6 需要交互且无更省手段 → 模型自主决策（兜底保守选择）");
 }
 
 async function callJev(
 	state: string,
-	questions: Record<string, unknown>
+	questions: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
 	const { stdout } = await execFileP(JEV_CLI, [state, "-q", JSON.stringify(questions), "-j"], {
 		timeout: 90_000,
@@ -178,20 +240,32 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 					description:
 						"Set true when no human will review the choice (sub-agent, cron, pipeline). " +
 						"On disagreement between the rule layer and Jev, the lower-risk option is recommended.",
-				})
+				}),
 			),
 		}),
 		async execute(_toolCallId, params) {
 			const { task, unattended } = params as { task: string; unattended?: boolean };
 
+			// ── 0. 可用性检测（清单写死，但设备实际装了什么不一定） ──
+			const avail = detectAvailability();
+			const usable = TOOLS.filter((t) => avail[t.id].available);
+			const missing = TOOLS.filter((t) => !avail[t.id].available);
+			// 全部缺失时不能剔完候选，否则无从路由：退回全清单并在输出里警示。
+			const candidates = usable.length > 0 ? usable : TOOLS;
+
 			// ── 1. 规则层（永不失败，兜底 + 交叉校验） ──
 			const rule = ruleRoute(task);
 
 			// ── 2. Jev 层（独立判断：不喂规则结论，避免自我印证） ──
+			// 只把“已安装”的工具当候选，否则会把任务推给不存在的工具。
 			const state =
 				`任务描述: ${task}\n\n` +
 				`本机可用的控网页/取信息手段（只能从中选，不得发明其它手段）:\n` +
-				TOOLS.map((t, i) => `${i + 1}. ${t.id} — ${t.capability}`).join("\n") +
+				candidates.map((t, i) => `${i + 1}. ${t.id} — ${t.capability}`).join("\n") +
+				(missing.length
+					? `\n\n【本机未安装，不得选为答案】\n` +
+						missing.map((t) => `- ${t.id}（装法: ${avail[t.id].hint}）`).join("\n")
+					: "") +
 				`\n\n决策原则:\n` +
 				`- 只需读取内容、尤其批量（>5 个页面）=> fetch_content\n` +
 				`- 只需联网搜索、无指定 URL => web_search\n` +
@@ -206,12 +280,10 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 				tool: {
 					type: "choice",
 					instructions: "完成这个任务最合适的手段是哪一个？只能选清单内的",
-					criteria: Object.fromEntries(
-						TOOLS.map((t) => [t.id, t.capability.slice(0, 90)])
-					),
+					criteria: Object.fromEntries(candidates.map((t) => [t.id, t.capability.slice(0, 90)])),
 				},
 			};
-			for (const t of TOOLS) {
+			for (const t of candidates) {
 				questions[`fit_${t.id.replace(/[-.]/g, "_")}`] = {
 					type: "score",
 					instructions: `${t.id} 对完成这个任务的适配程度`,
@@ -230,7 +302,7 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 			// ── 3. 白名单校验（清单外的工具名一律丢弃） ──
 			// Jev 的 choice 返回结构为 { type, choice, probabilities, confidence }，
 			// 不是裸字符串 —— 必须解包 .choice，否则永远拿不到结果。
-			const ids = TOOLS.map((t) => t.id) as string[];
+			const ids = candidates.map((t) => t.id) as string[];
 			let jevPick: ToolId | null = null;
 			let jevOutOfList: string | null = null;
 			let jevConf: number | null = null;
@@ -238,8 +310,7 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 			if (jevAnswers) {
 				const raw = jevAnswers.tool;
 				const obj = (typeof raw === "string" ? { choice: raw } : raw) as
-					| { choice?: unknown; confidence?: unknown; probabilities?: unknown }
-					| undefined;
+					{ choice?: unknown; confidence?: unknown; probabilities?: unknown } | undefined;
 				const c = obj?.choice;
 				if (typeof c === "string") {
 					if (ids.includes(c)) jevPick = c as ToolId;
@@ -281,9 +352,30 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 			L.push("");
 			L.push(`### 推荐: \`${finalPick}\`  （${spec.cost}）`);
 			L.push(spec.capability);
+			if (!avail[finalPick].available) {
+				L.push("");
+				L.push(
+					`### ⚠️ 推荐的工具本机未安装\n` +
+						`\`${finalPick}\` 在本机不可用，直接用会失败。装法:\n` +
+						"```bash\n" +
+						avail[finalPick].hint +
+						"\n```",
+				);
+			}
 			L.push("");
 			L.push(`**决策依据**: ${policy}`);
 			L.push("");
+
+			// 清单写死，设备实际装的不一样：把差异明确报出来，而不是默默当成可用。
+			if (missing.length) {
+				L.push("### 本机未安装（已从候选中剔除）");
+				for (const t of missing) L.push(`- \`${t.id}\` — 装法: ${avail[t.id].hint}`);
+				if (usable.length === 0) {
+					L.push("");
+					L.push("⚠️ **全部手段都未安装**，本次路由退回完整清单仅供参考。");
+				}
+				L.push("");
+			}
 
 			const fired = Object.entries(rule.signals)
 				.filter(([, v]) => v)
@@ -294,25 +386,21 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 			L.push("");
 
 			if (jevAnswers) {
-				const scored = TOOLS.map((t) => {
-					const raw = jevAnswers![`fit_${t.id.replace(/[-.]/g, "_")}`] as
-						| { score?: unknown }
-						| number
-						| undefined;
-					// score 同样返回 { score, confidence }，需解包；兼容裸数字以防端点变化。
-					const num =
-						typeof raw === "number"
-							? raw
-							: typeof raw?.score === "number"
-								? raw.score
-								: null;
-					const v = num === null ? null : Math.min(4, Math.max(0, num));
-					return { id: t.id, score: v === null ? null : Math.round((v / 4) * 100) };
-				}).sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+				const scored = candidates
+					.map((t) => {
+						const raw = jevAnswers![`fit_${t.id.replace(/[-.]/g, "_")}`] as
+							{ score?: unknown } | number | undefined;
+						// score 同样返回 { score, confidence }，需解包；兼容裸数字以防端点变化。
+						const num =
+							typeof raw === "number" ? raw : typeof raw?.score === "number" ? raw.score : null;
+						const v = num === null ? null : Math.min(4, Math.max(0, num));
+						return { id: t.id, score: v === null ? null : Math.round((v / 4) * 100) };
+					})
+					.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
 				L.push("### Jev 层");
 				L.push(
 					`- Jev 选择: \`${jevPick ?? "（未给出清单内结果）"}\`` +
-						(jevConf !== null ? `（把握度 ${(jevConf * 100).toFixed(0)}%）` : "")
+						(jevConf !== null ? `（把握度 ${(jevConf * 100).toFixed(0)}%）` : ""),
 				);
 				if (jevProbs) {
 					const top = Object.entries(jevProbs)
@@ -330,8 +418,7 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 				}
 				const runner = scored.find((s) => s.id !== finalPick && s.score !== null);
 				if (runner) L.push(`- 备选: \`${runner.id}\`（${runner.score}）`);
-				if (jevOutOfList)
-					L.push(`- ⚠️ Jev 返回清单外工具名 \`${jevOutOfList}\`，已丢弃`);
+				if (jevOutOfList) L.push(`- ⚠️ Jev 返回清单外工具名 \`${jevOutOfList}\`，已丢弃`);
 			} else {
 				L.push("### ⚠️ Jev 层不可用，已回退规则层");
 				L.push(`- 原因: ${jevError}`);
@@ -341,7 +428,7 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 			L.push("### 注意");
 			L.push(
 				"本工具只给建议、不执行任何操作。若你比本工具更了解上下文（页面是否 JS 渲染、用户历史偏好），" +
-					"可以覆盖推荐结果 —— 请说明理由。"
+					"可以覆盖推荐结果 —— 请说明理由。",
 			);
 
 			return {
@@ -359,6 +446,8 @@ export default function jevRouteExtension(pi: ExtensionAPI) {
 					jev_error: jevError,
 					jev_out_of_list: jevOutOfList,
 					unattended: Boolean(unattended),
+					available: Object.fromEntries(TOOLS.map((t) => [t.id, avail[t.id].available])),
+					missing_tools: missing.map((t) => t.id),
 				},
 			};
 		},
