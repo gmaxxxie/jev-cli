@@ -8,10 +8,11 @@
  *      配置 CLI 的默认模型、API 端点、默认问题、API key。
  *
  * 配置存储在 ~/.pi/agent/jev-config.json（扩展侧），执行 jev CLI 时覆盖
- * 其默认值；API key 写入 ~/.pi/agent/auth.json 的 openrouter.key
- * （与 install.sh 行为一致，CLI 会按 环境变量 > auth.json 解析）。
+ * 其默认值；API key 按网关写入对应文件（official → pi-typesafe/auth.json
+ * 的 apiKey；openrouter → ~/.pi/agent/auth.json 的 openrouter.key；
+ * newapi → 同一个 auth.json 的 new-api.key），CLI 会按 环境变量 > auth.json 解析。
  *
- * 依赖：~/.local/bin/jev CLI（实际走 OpenRouter Decisions API）
+ * 依赖：~/.local/bin/jev CLI（实际网关由 -g / jev-gateway.json 决定，默认 official）
  *
  * 用法（pi 里对 LLM 暴露的 tool）：
  *   jev(state="...", questions={"urgent": {"type":"noul", "instructions":"...",
@@ -34,7 +35,7 @@ const AUTH_PATH = join(process.env.HOME ?? "", ".pi", "agent", "auth.json");
 const DEFAULT_TIMEOUT = 90_000; // 工具执行超时（ms）
 
 interface JevConfig {
-	gateway?: string; // "official" | "openrouter"；传给 CLI 的 -g，并作为网关配置的单一事实源
+	gateway?: string; // "official" | "openrouter" | "newapi"；传给 CLI 的 -g，并作为网关配置的单一事实源
 	model?: string;
 	endpoint?: string;
 	timeoutMs?: number;
@@ -52,6 +53,11 @@ const GATEWAYS: Record<string, { label: string; endpoint: string; model: string 
 		label: "OpenRouter Decisions",
 		endpoint: "https://openrouter.ai/api/alpha/decisions",
 		model: "typesafe/jev-1.13",
+	},
+	newapi: {
+		label: "NewAPI Jev 网关（http://127.0.0.1:3000）",
+		endpoint: "http://127.0.0.1:3000/typesafe/v1/systemone",
+		model: "jev-1.13.0",
 	},
 };
 const GATEWAY_CONFIG = join(process.env.HOME ?? "", ".pi", "agent", "jev-gateway.json");
@@ -133,6 +139,18 @@ function hasAuthKey(gateway: string): boolean {
 		}
 		return false;
 	}
+	if (gateway === "newapi") {
+		try {
+			if (existsSync(AUTH_PATH)) {
+				const auth = JSON.parse(readFileSync(AUTH_PATH, "utf-8"));
+				const key = auth?.["new-api"]?.key;
+				return typeof key === "string" && key.length > 0;
+			}
+		} catch {
+			/* ignore */
+		}
+		return false;
+	}
 	if (process.env.OPENROUTER_API_KEY) return true;
 	try {
 		if (existsSync(AUTH_PATH)) {
@@ -189,6 +207,51 @@ function clearOpenRouterKey() {
 	} catch (e) {
 		console.error("[jev] 清除 key 失败:", e);
 	}
+}
+
+/** 写入 NewAPI key（与 CLI 共用 ~/.pi/agent/auth.json 的 new-api.key）。 */
+function writeNewApiKey(key: string) {
+	let auth: Record<string, unknown> = {};
+	try {
+		if (existsSync(AUTH_PATH)) auth = JSON.parse(readFileSync(AUTH_PATH, "utf-8")) ?? {};
+	} catch (e) {
+		console.error("[jev] 读取 auth.json 失败:", e);
+	}
+	const na = (auth["new-api"] ?? {}) as Record<string, unknown>;
+	na.key = key;
+	auth["new-api"] = na;
+	writeFileSync(AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", "utf-8");
+}
+
+/** 清除 NewAPI key（只删 new-api.key，保留 auth.json 里的其他认证项）。 */
+function clearNewApiKey() {
+	try {
+		if (existsSync(AUTH_PATH)) {
+			const auth = JSON.parse(readFileSync(AUTH_PATH, "utf-8"));
+			if (auth?.["new-api"]) delete (auth["new-api"] as Record<string, unknown>).key;
+			writeFileSync(AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", "utf-8");
+		}
+	} catch (e) {
+		console.error("[jev] 清除 key 失败:", e);
+	}
+}
+
+/** 当前网关 key 的存放位置描述（配置向导提示用，与 CLI 解析顺序一致）。 */
+function keyLocationLabel(gateway: string): { write: string; clear: string } {
+	if (gateway === "official")
+		return {
+			write: "写入 ~/.pi/agent/pi-typesafe/auth.json 的 apiKey",
+			clear: "从 pi-typesafe/auth.json 删除 apiKey",
+		};
+	if (gateway === "newapi")
+		return {
+			write: "写入 ~/.pi/agent/auth.json 的 new-api.key",
+			clear: "从 auth.json 删除 new-api.key",
+		};
+	return {
+		write: "写入 ~/.pi/agent/auth.json 的 openrouter.key",
+		clear: "从 auth.json 删除 openrouter.key",
+	};
 }
 
 function formatConfig(cfg: JevConfig): string {
@@ -386,7 +449,7 @@ export default function jevExtension(pi: ExtensionAPI) {
 					"用法:",
 					"  /jev           显示当前配置与用法",
 					"  /jev config    交互式配置（网关/模型/端点/默认问题/API key）",
-					"  /jev gateway [official|openrouter]   查看或切换网关（写 jev-gateway.json）",
+					"  /jev gateway [" + Object.keys(GATEWAYS).join("|") + "]   查看或切换网关（写 jev-gateway.json）",
 					"  /jev show      查看当前配置 JSON",
 					"  /jev reset     恢复默认配置",
 					"",
@@ -476,21 +539,23 @@ export default function jevExtension(pi: ExtensionAPI) {
 
 			// 5. API key
 			let key = "";
+			const keyGw = gateway ?? curGw;
+			const keyLoc = keyLocationLabel(keyGw);
 			const keyChoices = [
 				{ value: "skip", label: "保持不变", description: "不修改现有 key" },
 				{
 					value: "input",
 					label: "输入新 key",
-					description: "写入 ~/.pi/agent/auth.json",
+					description: keyLoc.write,
 				},
 				{
 					value: "clear",
 					label: "清除 key",
-					description: "从 auth.json 删除 openrouter.key",
+					description: keyLoc.clear,
 				},
 			];
 			const pickKey = await ctx.ui.select(
-				`API key 如何处理?（当前网关 ${gateway ?? curGw}）`,
+				`API key 如何处理?（当前网关 ${keyGw}）`,
 				keyChoices.map((c) => `${c.value}: ${c.label} — ${c.description}`),
 			);
 			if (pickKey) {
@@ -498,11 +563,13 @@ export default function jevExtension(pi: ExtensionAPI) {
 					const k = await ctx.ui.input("API key:", "");
 					if (k && k.trim()) {
 						key = k.trim();
-						if ((gateway ?? curGw) === "official") writeTypesafeKey(key);
+						if (keyGw === "official") writeTypesafeKey(key);
+						else if (keyGw === "newapi") writeNewApiKey(key);
 						else writeAuthKey(key);
 					}
 				} else if (pickKey.startsWith("clear")) {
-					if ((gateway ?? curGw) === "official") clearTypesafeKey();
+					if (keyGw === "official") clearTypesafeKey();
+					else if (keyGw === "newapi") clearNewApiKey();
 					else clearOpenRouterKey();
 				}
 			}
@@ -520,7 +587,7 @@ export default function jevExtension(pi: ExtensionAPI) {
 					CONFIG_PATH +
 					"\n" +
 					formatConfig(newCfg) +
-					(key ? "\nAPI key 已写入 auth.json" : ""),
+					(key ? `\nAPI key 已${keyLoc.write}` : ""),
 				"info",
 			);
 		},
