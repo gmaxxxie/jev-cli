@@ -298,8 +298,14 @@ jev-cli/
 │   └── install-jev-stack.sh   full-stack installer for a new device
 ├── install.sh          one-shot installer (INSTALL_CLI switch; CLI + API key guide)
 ├── package.json        pi package manifest (git source)
+├── DEVELOPMENT.md      git rules: writable copy, gitea-only pushes (read before editing)
 └── README.md           (English)
 ```
+
+## Development
+
+Editing this repository? Read [`DEVELOPMENT.md`](DEVELOPMENT.md) first — it covers which
+checkout is writable, why pushes go to gitea only, and the 2026-09-20 rollback incident.
 
 ## License
 
