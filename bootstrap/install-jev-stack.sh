@@ -9,6 +9,7 @@
 #   4. ~/.pi/agent/AGENTS.md 分工段 → 告诉 agent 什么场景用哪条通道
 #   5. 网关默认值                   → jev-gateway.json = official
 #   6. API key                      → ~/.pi/agent/pi-typesafe/auth.json（jev CLI 读取）
+#   7. ~/.local/bin/jev-uf wrapper  → jev-ultrafast 的本地入口（2026-09-25 加，按 OS 生成）
 #
 # 注：pi-typesafe 扩展（typesafe_evaluate）与 shell rc 环境变量块已于 2026-09 退役，
 #     本脚本不再安装。但 auth.json 里的 key 仍由 jev CLI 使用，故 key 部分保留。
@@ -164,6 +165,15 @@ else
 fi
 
 # jev-ultrafast → 公开 Python 项目（需 uv + .env 密钥）
+# 仓库位置（2026-09-25 修）：JEV_ULTRAFAST_DIR > 已存在的已知位置 > 默认。
+# 非交互跑（ssh/cron）读不到 .zshrc 里的 JEV_ULTRAFAST_DIR，旧逻辑会去 ~/Project
+# 凭空 clone 第二份（没 .env / venv，用不了）——ops 装在 ~/dev 就踩过。
+if [[ -z "${JEV_ULTRAFAST_DIR:-}" ]]; then
+  for _uf in "$HOME/dev/jev-ultrafast" "$HOME/Project/jev-ultrafast" "$HOME/GitHub/jev-ultrafast"; do
+    if [[ -f "$_uf/pyproject.toml" ]]; then JEV_ULTRAFAST_DIR="$_uf"; break; fi
+  done
+  unset _uf
+fi
 UF_DIR="${JEV_ULTRAFAST_DIR:-$HOME/Project/jev-ultrafast}"
 if [[ -f "$UF_DIR/pyproject.toml" ]]; then
   if [[ $DO_UPDATE == 1 && -d "$UF_DIR/.git" ]]; then
@@ -174,7 +184,7 @@ if [[ -f "$UF_DIR/pyproject.toml" ]]; then
       warn "jev-ultrafast 更新失败（无跟踪分支或本地有改动），继续；可手动 cd $UF_DIR && git pull"
     fi
   else
-    skip "jev-ultrafast 已存在于 $UF_DIR（要升级加 --update）"
+    skip "jev-ultrafast 已存在于 ${UF_DIR}（要升级加 --update）"
   fi
 elif command -v git >/dev/null 2>&1; then
   if [[ $DRY_RUN == 1 ]]; then
@@ -205,6 +215,115 @@ if [[ -f "$UF_DIR/pyproject.toml" ]]; then
   if [[ ! -f "$UF_DIR/.env" ]]; then
     warn "jev-ultrafast 需要 $UF_DIR/.env（TYPESAFE_API_KEY / TEXT_MODEL_* 等），请自行填写"
   fi
+fi
+
+# jev-uf → ~/.local/bin/jev-uf（本地入口，2026-09-25 加）
+# 之前这个 wrapper 是手工建的，丢了没人补：ops(Mac mini) 2026-09-25 就丢了，
+# 只剩 skill 里一句「用法: jev-uf ...」指着一个不存在的命令。改成由 bootstrap 生成。
+# 两套实现按 OS 分（与两台机器既有实现一致，不互相替代）：
+#   macOS → upstream examples/run_local.py（自己发现 9223 并注入 BU_CDP_WS）
+#   Linux → upstream examples/run.py（BH_RUNTIME_DIR + BU_CDP_URL + uv run --env-file .env）
+UF_LINK="${HOME}/.local/bin/jev-uf"
+
+uf_wrapper_content() {
+  case "$(uname -s 2>/dev/null)" in
+    Darwin)
+      cat <<'UFEOF'
+#!/bin/bash
+# jev-uf — run a jev-ultrafast task against the local daily Chromium (CDP 9223).
+#
+# macOS 实现：走本仓库 examples/run_local.py + BU_CDP_WS，直接挂到已在监听的
+# 9223（日常 profile，带登录态）；agent 自己开后台 tab，不动用户已开的标签页。
+# 接口与 Linux 版一致：jev-uf <url> "<goal>" [extra args]
+#
+# 本文件由 jev-cli bootstrap/install-jev-stack.sh 生成（丢了重跑 bootstrap 即可）。
+set -euo pipefail
+
+REPO="${JEV_ULTRAFAST_DIR:-$HOME/dev/jev-ultrafast}"
+PY="$REPO/.venv/bin/python"
+
+if [ ! -x "$PY" ]; then
+  echo "jev-uf: venv 不在 $REPO/.venv（先 cd $REPO && uv sync）" >&2; exit 1
+fi
+if [ ! -f "$REPO/examples/run_local.py" ]; then
+  echo "jev-uf: 缺 $REPO/examples/run_local.py" >&2; exit 1
+fi
+if [ ! -f "$REPO/.env" ]; then
+  echo "jev-uf: 缺 $REPO/.env（需 TYPESAFE_API_KEY 等）" >&2; exit 1
+fi
+if [ $# -lt 2 ]; then
+  echo 'usage: jev-uf <url> "<goal>" [extra args to examples/run_local.py，如 --budget-ms 60000 --quiet]' >&2
+  exit 2
+fi
+
+URL="$1"; GOAL="$2"; shift 2
+
+cd "$REPO"
+exec "$PY" examples/run_local.py --url "$URL" --goal "$GOAL" "$@"
+UFEOF
+      ;;
+    *)
+      cat <<'UFEOF'
+#!/bin/bash
+# jev-uf — run a jev-ultrafast task against the local headless Chromium (CDP 9223).
+#
+# Linux 实现：走 upstream examples/run.py，用 BH_RUNTIME_DIR / BU_CDP_URL 挂到已运行的
+# 浏览器（本机是用户 systemd 单元 agent-chromium.service：headless Chromium + 专用
+# profile ~/.config/agent-chromium + 端口 9223）。
+# 接口与 macOS 版一致：jev-uf <url> "<goal>" [extra args to examples/run.py]
+#
+# 本文件由 jev-cli bootstrap/install-jev-stack.sh 生成（丢了重跑 bootstrap 即可）。
+set -euo pipefail
+
+REPO="${JEV_ULTRAFAST_DIR:-$HOME/Project/jev-ultrafast}"
+
+if [ ! -x "$REPO/.venv/bin/python" ]; then
+  echo "jev-uf: venv 不在 $REPO/.venv（先 cd $REPO && uv sync）" >&2; exit 1
+fi
+if [ ! -f "$REPO/examples/run.py" ]; then
+  echo "jev-uf: 缺 $REPO/examples/run.py" >&2; exit 1
+fi
+if [ ! -f "$REPO/.env" ]; then
+  echo "jev-uf: 缺 $REPO/.env（需 TYPESAFE_API_KEY 等）" >&2; exit 1
+fi
+if [ $# -lt 2 ]; then
+  echo 'usage: jev-uf <url> "<goal>" [extra args to examples/run.py]' >&2
+  exit 2
+fi
+
+URL="$1"; GOAL="$2"; shift 2
+
+cd "$REPO"
+export BH_RUNTIME_DIR="${BH_RUNTIME_DIR:-/tmp/bh-9223}"
+export BU_CDP_URL="${BU_CDP_URL:-http://127.0.0.1:9223}"
+exec uv run --env-file .env python examples/run.py --url "$URL" --goal "$GOAL" "$@"
+UFEOF
+      ;;
+  esac
+}
+
+if [[ ! -f "$UF_LINK" ]]; then
+  mkdir -p "$(dirname "$UF_LINK")"
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '    %s[dry-run]%s 将生成 %s\n' "$D" "$N" "$UF_LINK"
+  elif uf_wrapper_content > "$UF_LINK" && chmod +x "$UF_LINK"; then
+    ok "已生成 ${UF_LINK}（jev-uf 入口）"
+  else
+    warn "生成 $UF_LINK 失败，可手动重建（见 jev-ultrafast skill 附录）"
+  fi
+elif [[ $DO_UPDATE == 1 ]]; then
+  if diff -q <(uf_wrapper_content) "$UF_LINK" >/dev/null 2>&1; then
+    skip "$UF_LINK 已是最新"
+  elif [[ $DRY_RUN == 1 ]]; then
+    printf '    %s[dry-run]%s 将更新 %s（旧版留 .bak）\n' "$D" "$N" "$UF_LINK"
+  elif cp "$UF_LINK" "$UF_LINK.bak-$(date +%Y%m%d%H%M%S)" && \
+       uf_wrapper_content > "$UF_LINK" && chmod +x "$UF_LINK"; then
+    ok "已更新 ${UF_LINK}（旧版存 .bak）"
+  else
+    warn "更新 $UF_LINK 失败，继续"
+  fi
+else
+  skip "$UF_LINK 已存在（要按本脚本覆盖加 --update）"
 fi
 
 # -----------------------------------------------------------------------------
@@ -409,6 +528,11 @@ if [[ -f "$UF_DIR/pyproject.toml" ]]; then
 else
   printf '      %s!%s jev-ultrafast 未安装（web-control-router 会用到但不可用）\n' "$Y" "$N"
 fi
+if [[ -x "$UF_LINK" ]]; then
+  printf '      %s✓%s %s（jev-ultrafast 本地入口）\n' "$G" "$N" "$UF_LINK"
+else
+  printf '      %s!%s %s 缺失（jev-ultrafast skill 里的用法会 command not found；重跑本脚本可生成）\n' "$Y" "$N" "$UF_LINK"
+fi
 
 if [[ -x "$CLI_LINK" ]]; then
   printf '      %s✓%s %s\n' "$G" "$N" "$CLI_LINK → $(readlink "$CLI_LINK" 2>/dev/null || echo '(普通文件)')"
@@ -454,4 +578,5 @@ cat <<EOF
   jev --status / --check                # 看网关 / 活验证
   jev --use openrouter | jev --use official   # 切网关（所有调用点一起切）
   /jev gateway openrouter               # pi 内等价命令
+  jev-uf <url> "<goal>"                  # 多步浏览器任务（需 9223 上 Chromium 在监听）
 EOF
